@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package ingest.v1;
+
+option go_package = "github.com/rowjay007/observe-x/pkg/otlp/ingestv1";
+
+import "google/protobuf/timestamp.proto";
+
+enum SignalType {
+    SIGNAL_TYPE_UNSPECIFIED = 0;
+    SIGNAL_TYPE_METRIC = 1;
+    SIGNAL_TYPE_LOG = 2;
+    SIGNAL_TYPE_TRACE = 3;
+    SIGNAL_TYPE_PROFILE = 4;
+}
+
+message KeyValue {
+    string key = 1;
+    string value = 2;
+}
+
+message Signal {
+    string tenant_id = 1;
+    SignalType type = 2;
+    bytes payload = 3;
+    repeated KeyValue attributes = 4;
+    google.protobuf.timestamp.Timestamp received_at = 5;
+    string trace_id = 6;
+    string span_id = 7;
+}
+
+message IngestRequest {
+    repeated Signal signals = 1;
+}
+
+message IngestResponse {
+    bool success = 1;
+    string message = 2;
+    int64 accepted_count = 3;
+}
+
+service IngestService {
+    rpc Export(IngestRequest) returns (IngestResponse);
+}
