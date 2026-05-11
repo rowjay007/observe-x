@@ -3,10 +3,12 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/rowjay007/observe-x/pkg/signal"
 )
 
-func DecodeStage(ctx context.Context, in <-chan Signal) (<-chan Signal, error) {
-	out := make(chan Signal, 1024)
+func DecodeStage(ctx context.Context, in <-chan signal.Signal) (<-chan signal.Signal, error) {
+	out := make(chan signal.Signal, 1024)
 	go func() {
 		defer close(out)
 		for sig := range in {
@@ -24,8 +26,8 @@ func DecodeStage(ctx context.Context, in <-chan Signal) (<-chan Signal, error) {
 	return out, nil
 }
 
-func ValidateStage(ctx context.Context, in <-chan Signal) (<-chan Signal, error) {
-	out := make(chan Signal, 1024)
+func ValidateStage(ctx context.Context, in <-chan signal.Signal) (<-chan signal.Signal, error) {
+	out := make(chan signal.Signal, 1024)
 	go func() {
 		defer close(out)
 		for sig := range in {
@@ -42,8 +44,8 @@ func ValidateStage(ctx context.Context, in <-chan Signal) (<-chan Signal, error)
 	return out, nil
 }
 
-func EnrichStage(ctx context.Context, in <-chan Signal) (<-chan Signal, error) {
-	out := make(chan Signal, 1024)
+func EnrichStage(ctx context.Context, in <-chan signal.Signal) (<-chan signal.Signal, error) {
+	out := make(chan signal.Signal, 1024)
 	go func() {
 		defer close(out)
 		for sig := range in {

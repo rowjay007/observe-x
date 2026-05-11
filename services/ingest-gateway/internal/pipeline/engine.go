@@ -2,29 +2,13 @@ package pipeline
 
 import (
 	"context"
-	"time"
+
+	"github.com/rowjay007/observe-x/pkg/signal"
 )
 
-type SignalType string
+type StageFunc func(ctx context.Context, in <-chan signal.Signal) (<-chan signal.Signal, error)
 
-const (
-	Metric  SignalType = "METRIC"
-	Log     SignalType = "LOG"
-	Trace   SignalType = "TRACE"
-	Profile SignalType = "PROFILE"
-)
-
-type Signal struct {
-	TenantID   string
-	Type       SignalType
-	Payload    []byte
-	Attributes map[string]string
-	ReceivedAt time.Time
-}
-
-type StageFunc func(ctx context.Context, in <-chan Signal) (<-chan Signal, error)
-
-func Chain(ctx context.Context, in <-chan Signal, stages ...StageFunc) (<-chan Signal, error) {
+func Chain(ctx context.Context, in <-chan signal.Signal, stages ...StageFunc) (<-chan signal.Signal, error) {
 	current := in
 	for _, stage := range stages {
 		next, err := stage(ctx, current)
