@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      clickhouse:
+        image: clickhouse/clickhouse-server:latest
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 8123:8123
+          - 9000:9000
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.23'
+
+    - name: Cache Go modules
+      uses: actions/cache@v4
+      with:
+        path: ~/go/pkg/mod
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+
+    - name: Install dependencies
+      run: go mod download
+
+    - name: Run tests
+      run: go test -v -race -coverprofile=coverage.out ./...
+
+    - name: Run integration tests
+      run: go test -v -tags=integration ./tests/integration/...
+      env:
+        POSTGRES_URL: postgres://postgres:postgres@localhost:5432/observex?sslmode=disable
+        CLICKHOUSE_URL: clickhouse://localhost:9000/observex
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.out
+        flags: unittests
+        name: codecov-umbrella
+
+    - name: Run benchmarks
+      run: go test -bench=. -benchmem ./...
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.23'
+
+    - name: Build services
+      run: |
+        go build -o bin/ingest-gateway ./services/ingest-gateway/cmd
+        go build -o bin/stream-processor ./services/stream-processor/cmd
+        go build -o bin/storage-engine ./services/storage-engine/cmd
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: binaries
+        path: bin/
+
+  e2e:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: binaries
+        path: bin/
+
+    - name: Make binaries executable
+      run: chmod +x bin/*
+
+    - name: Start services
+      run: |
+        docker-compose -f tests/docker-compose.yml up -d
+        sleep 30
+
+    - name: Run E2E tests
+      run: go test -v -tags=e2e ./tests/e2e/...
+
+    - name: Stop services
+      run: docker-compose -f tests/docker-compose.yml down

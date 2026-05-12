@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/rowjay007/observe-x/pkg/cep"
+	"github.com/rowjay007/observe-x/pkg/sampling"
 	"github.com/rowjay007/observe-x/pkg/signal"
 )
 
@@ -18,6 +19,7 @@ type TenantActor struct {
 	tenantID  string
 	inbox     chan signal.Signal
 	cepEngine *cep.Engine
+	sampler   *sampling.AdaptiveSampler
 }
 
 func NewTenantActor(tenantID string, bufferSize int) *TenantActor {
@@ -25,6 +27,7 @@ func NewTenantActor(tenantID string, bufferSize int) *TenantActor {
 		tenantID:  tenantID,
 		inbox:     make(chan signal.Signal, bufferSize),
 		cepEngine: cep.NewEngine(),
+		sampler:   sampling.NewAdaptiveSampler(0.1, 1000),
 	}
 }
 
@@ -56,5 +59,8 @@ func (a *TenantActor) Stop() error {
 func (a *TenantActor) processSignal(sig signal.Signal) {
 	event := a.cepEngine.Process(context.Background(), sig)
 	if event != nil {
+	}
+
+	if a.sampler.Decide(sig) == sampling.Keep {
 	}
 }

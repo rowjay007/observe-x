@@ -1,26 +1,27 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/rowjay007/observe-x/pkg/signal"
-	"github.com/rowjay007/observe-x/pkg/supervisor"
-	"github.com/rowjay007/observe-x/pkg/wal"
+	"github.com/rowjay007/observe-x/pkg/engine"
 )
 
 func main() {
-	walInstance, err := wal.NewWAL("/tmp/observex/wal")
+	processingEngine, err := engine.NewProcessingEngine("/tmp/observex/wal", 0.1, 1000)
 	if err != nil {
-		log.Fatalf("Failed to initialize WAL: %v", err)
+		log.Fatalf("Failed to create processing engine: %v", err)
 	}
-	defer walInstance.Close()
+	defer processingEngine.Stop()
 
-	supervisorInstance := supervisor.NewSupervisor()
-	supervisorInstance.Start()
-	defer supervisorInstance.Stop()
+	ctx := context.Background()
+	if err := processingEngine.Start(ctx); err != nil {
+		log.Fatalf("Failed to start processing engine: %v", err)
+	}
 
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -28,8 +29,8 @@ func main() {
 	r.POST("/v1/ingest", func(c *gin.Context) {
 		var req struct {
 			TenantID string            `json:"tenant_id"`
-			Type     signal.Type       `json:"type"`
-			Payload  []byte            `json:"payload"`
+			Type     signal.Type        `json:"type"`
+			Payload  []byte           `json:"payload"`
 			Attrs    map[string]string `json:"attributes"`
 		}
 
@@ -46,7 +47,10 @@ func main() {
 			ReceivedAt: time.Now(),
 		}
 
-		supervisorInstance.RouteToTenant(req.TenantID, sig)
+		if err := processingEngine.ProcessSignal(ctx, sig); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Processing failed"})
+			return
+		}
 
 		c.JSON(http.StatusAccepted, gin.H{
 			"status":    "accepted",
