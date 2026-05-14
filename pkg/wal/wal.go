@@ -8,11 +8,12 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 )
 
 const (
 	MaxSegmentSize = 64 * 1024 * 1024
-	LogHeaderSize  = 12 
+	LogHeaderSize  = 12
 )
 
 type LogEntry struct {
@@ -22,12 +23,12 @@ type LogEntry struct {
 }
 
 type WAL struct {
-	mu           sync.RWMutex
-	dir          string
-	activeFile   *os.File
-	mmapData     []byte
-	writeOffset  int
-	segmentID    uint64
+	mu          sync.RWMutex
+	dir         string
+	activeFile  *os.File
+	mmapData    []byte
+	writeOffset int
+	segmentID   uint64
 }
 
 func NewWAL(dir string) (*WAL, error) {
@@ -45,25 +46,27 @@ func NewWAL(dir string) (*WAL, error) {
 
 func (w *WAL) rotate() error {
 	if w.activeFile != nil {
-		w.sync()
-		w.unmap()
+		_ = w.sync()
+		_ = w.unmap()
 		w.activeFile.Close()
 	}
 
 	w.segmentID++
 	path := filepath.Join(w.dir, fmt.Sprintf("%016d.log", w.segmentID))
-	
+
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
 
 	if err := f.Truncate(MaxSegmentSize); err != nil {
+		f.Close()
 		return err
 	}
 
 	data, err := syscall.Mmap(int(f.Fd()), 0, MaxSegmentSize, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
 	if err != nil {
+		f.Close()
 		return err
 	}
 
@@ -84,11 +87,19 @@ func (w *WAL) Write(payload []byte) error {
 		}
 	}
 
-	ts := binary.LittleEndian.Uint64([]byte(fmt.Sprintf("%d", 0))) 
+	ts := time.Now().UnixNano()
 	crc := crc32.ChecksumIEEE(payload)
 
+	if w.writeOffset+LogHeaderSize > MaxSegmentSize {
+		return fmt.Errorf("not enough space for header")
+	}
+
+	if w.writeOffset+LogHeaderSize+len(payload) > MaxSegmentSize {
+		return fmt.Errorf("not enough space for payload")
+	}
+
 	binary.LittleEndian.PutUint32(w.mmapData[w.writeOffset:w.writeOffset+4], crc)
-	binary.LittleEndian.PutUint64(w.mmapData[w.writeOffset+4:w.writeOffset+12], ts)
+	binary.LittleEndian.PutUint64(w.mmapData[w.writeOffset+4:w.writeOffset+12], uint64(ts))
 	copy(w.mmapData[w.writeOffset+12:w.writeOffset+entrySize], payload)
 
 	w.writeOffset += entrySize
@@ -96,10 +107,16 @@ func (w *WAL) Write(payload []byte) error {
 }
 
 func (w *WAL) sync() error {
-	return nil 
+	if w.activeFile == nil {
+		return nil
+	}
+	return w.activeFile.Sync()
 }
 
 func (w *WAL) unmap() error {
+	if len(w.mmapData) == 0 {
+		return nil
+	}
 	return syscall.Munmap(w.mmapData)
 }
 

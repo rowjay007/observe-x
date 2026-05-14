@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"encoding/json"
-
 	"github.com/rowjay007/observe-x/pkg/sampling"
 	"github.com/rowjay007/observe-x/pkg/signal"
 	"github.com/rowjay007/observe-x/pkg/supervisor"
@@ -83,6 +82,7 @@ func EnrichStage(ctx context.Context, in <-chan signal.Signal) (<-chan signal.Si
 type ProcessingEngine struct {
 	walInstance   *wal.WAL
 	supervisor    *supervisor.Supervisor
+	sampler       *sampling.AdaptiveSampler
 	samplingRate  float64
 	maxTraceQueue int
 }
@@ -96,6 +96,7 @@ func NewProcessingEngine(walPath string, samplingRate float64, maxTraceQueue int
 	return &ProcessingEngine{
 		walInstance:   walInstance,
 		supervisor:    supervisor.NewSupervisor(),
+		sampler:       sampling.NewAdaptiveSampler(samplingRate, maxTraceQueue),
 		samplingRate:  samplingRate,
 		maxTraceQueue: maxTraceQueue,
 	}, nil
@@ -128,8 +129,6 @@ func (e *ProcessingEngine) shouldPersist(sig signal.Signal) bool {
 		return true
 	}
 
-	sampler := sampling.NewAdaptiveSampler(e.samplingRate, e.maxTraceQueue)
-	decision := sampler.Decide(sig)
-
+	decision := e.sampler.Decide(sig)
 	return decision == sampling.Keep
 }

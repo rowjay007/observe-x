@@ -1,6 +1,16 @@
-# ObserveX Roadmap: Distributed Observability & APM Platform
+# ObserveX: Distributed Observability & APM Platform — Production Roadmap
 
-ObserveX is a production-grade, self-hosted observability stack built in Go 1.23+. This roadmap outlines the iterative delivery of 8 microservices, a custom query language (ObserveQL), and an AI-driven anomaly detection engine.
+**Project:** ObserveX v1.0  
+**Status:** Phase 1 — Ingest Foundation (Active)  
+**Duration:** 18 Weeks (14–18 Weeks)  
+**Go Version:** 1.23+  
+**Difficulty:** Mastery-Level  
+
+---
+
+## 📋 Executive Summary
+
+ObserveX is a **self-hosted, multi-tenant observability stack** that replaces commercial solutions like Datadog, New Relic, or Dynatrace. It ingests **metrics, logs, traces, and profiling data** from thousands of services simultaneously, stores them efficiently in a custom columnar engine, and surfaces insights through a real-time query interface and intelligent alerting.
 
 ## 🏗 Architectural Principles
 - **Pipeline Architecture:** Composable stages via bounded channels for ingest.

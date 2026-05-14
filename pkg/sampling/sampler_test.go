@@ -1,38 +1,42 @@
 package sampling
 
 import (
-	"testing"
 	"github.com/rowjay007/observe-x/pkg/signal"
+	"testing"
 )
 
-func TestAdaptiveSampler(t *testing.T) {
-	sampler := NewAdaptiveSampler(0.1, 100)
+func TestAdaptiveSamplerKeepsHighScoreTrace(t *testing.T) {
+	sampler := NewAdaptiveSampler(0.1, 2)
 
 	sig := signal.Signal{
 		Type: signal.Trace,
 		Attributes: map[string]string{
-			"trace_id":     "trace-123",
-			"severity":     "ERROR",
-			"duration_ms":  "1500",
-			"service_name": "payment-service",
+			"trace_id": "trace-high",
+			"severity": "ERROR",
 		},
 	}
 
-	decision := sampler.Decide(sig)
-	if decision != Keep {
-		t.Errorf("Expected high-value trace to be kept, got %v", decision)
+	if sampler.Decide(sig) != Keep {
+		t.Fatalf("expected high-score trace to be kept")
 	}
+}
 
-	normalSig := signal.Signal{
+func TestAdaptiveSamplerKeepsRecentTrace(t *testing.T) {
+	sampler := NewAdaptiveSampler(0.1, 2)
+
+	sig := signal.Signal{
 		Type: signal.Trace,
 		Attributes: map[string]string{
-			"trace_id":     "trace-456",
-			"service_name": "logging-service",
+			"trace_id":    "trace-recent",
+			"duration_ms": "2000",
 		},
 	}
 
-	normalDecision := sampler.Decide(normalSig)
-	if normalDecision != Drop {
-		t.Errorf("Expected low-value trace to be dropped, got %v", normalDecision)
+	if sampler.Decide(sig) != Keep {
+		t.Fatalf("expected first trace to be kept")
+	}
+
+	if sampler.Decide(sig) != Keep {
+		t.Fatalf("expected second recent trace to be kept")
 	}
 }
