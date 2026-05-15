@@ -4,7 +4,7 @@
 **Status:** Phase 1 — Ingest Foundation (Active)  
 **Duration:** 18 Weeks (14–18 Weeks)  
 **Go Version:** 1.23+  
-**Difficulty:** Mastery-Level  
+**Difficulty:** Mastery-Level
 
 ---
 
@@ -13,6 +13,7 @@
 ObserveX is a **self-hosted, multi-tenant observability stack** that replaces commercial solutions like Datadog, New Relic, or Dynatrace. It ingests **metrics, logs, traces, and profiling data** from thousands of services simultaneously, stores them efficiently in a custom columnar engine, and surfaces insights through a real-time query interface and intelligent alerting.
 
 ## 🏗 Architectural Principles
+
 - **Pipeline Architecture:** Composable stages via bounded channels for ingest.
 - **Actor Model:** Isolated `TenantActor` goroutines for multi-tenant safety.
 - **Lambda Architecture:** Speed layer (Redis) + Batch layer (DuckDB/S3) + Serving layer (ClickHouse).
@@ -23,45 +24,50 @@ ObserveX is a **self-hosted, multi-tenant observability stack** that replaces co
 ## 📅 Phased Implementation Plan
 
 ### Phase 1: Ingest Foundation (Weeks 1-3) 🏗️
+
 - [ ] **Project Initialization:** Go workspace, Proto definitions, and ADR-001 (Base Architecture).
 - [ ] **ingest-gateway:**
-    - OTLP gRPC/HTTP receivers.
-    - StatsD UDP listener.
-    - mTLS & API Key (BLAKE3) validation.
+  - OTLP gRPC/HTTP receivers.
+  - StatsD UDP listener.
+  - mTLS & API Key (BLAKE3) validation.
 - [ ] **Pipeline Core:** `StageFunc` implementation with back-pressure and load shedding.
 - [ ] **storage-engine (Core):**
-    - Custom WAL (mmap'd segments, CRC32).
-    - ClickHouse Strategy implementation.
-    - DDL Migrations.
+  - Custom WAL (mmap'd segments, CRC32).
+  - ClickHouse Strategy implementation.
+  - DDL Migrations.
 - [ ] **Validation:** Prove 12K events/sec ingest with <5ms P99 WAL commit.
 
 ### Phase 2: Stream Processing & Multi-Tenancy (Weeks 4-7) 🎭
+
 - [ ] **stream-processor:**
-    - Actor Model implementation (TenantActor + Supervisor).
-    - CEP (Complex Event Processing) engine.
-    - Adaptive Sampler (Priority-Queue based).
+  - Actor Model implementation (TenantActor + Supervisor).
+  - CEP (Complex Event Processing) engine.
+  - Adaptive Sampler (Priority-Queue based).
 - [ ] **tenant-api:**
-    - PostgreSQL schema with RLS (Row-Level Security).
-    - GraphQL management API.
+  - PostgreSQL schema with RLS (Row-Level Security).
+  - GraphQL management API.
 - [ ] **WASM Plugin System:** `wasmtime-go` integration for tenant-specific logic.
 
 ### Phase 3: Query Engine & ObserveQL (Weeks 8-11) 🔍
+
 - [ ] **ObserveQL Grammar:** ANTLR4 definition and Go parser generation.
 - [ ] **query-engine:**
-    - Distributed Query Planner.
-    - Cost-Based Optimizer.
-    - Federated Execution (ClickHouse + S3).
-    - gRPC Result Streaming (Arrow format).
+  - Distributed Query Planner.
+  - Cost-Based Optimizer.
+  - Federated Execution (ClickHouse + S3).
+  - gRPC Result Streaming (Arrow format).
 
 ### Phase 4: Intelligence & Alerting (Weeks 12-14) 🧠
+
 - [ ] **ml-anomaly-detector:**
-    - ONNX Runtime integration (Isolation Forest + LSTM).
-    - Real-time EWMA scoring.
+  - ONNX Runtime integration (Isolation Forest + LSTM).
+  - Real-time EWMA scoring.
 - [ ] **alert-manager:**
-    - SLO burn-rate evaluation engine.
-    - Notification routing tree (PagerDuty, Slack).
+  - SLO burn-rate evaluation engine.
+  - Notification routing tree (PagerDuty, Slack).
 
 ### Phase 5: UI & Production Hardening (Weeks 15-18) 🚀
+
 - [ ] **ui-server:** React + D3.js dashboard served via `embed.FS`.
 - [ ] **Cold Storage:** S3 Parquet + Delta Lake lifecycle management.
 - [ ] **K8s & GitOps:** Helm charts + ArgoCD configurations.
@@ -70,6 +76,7 @@ ObserveX is a **self-hosted, multi-tenant observability stack** that replaces co
 ---
 
 ## 🛠️ Tooling & Stack
+
 - **Languages:** Go 1.23, SQL, ANTLR4.
 - **Data Stores:** ClickHouse, PostgreSQL, Redis, S3 (Parquet).
 - **Communication:** gRPC, Apache Arrow, NATS JetStream.
@@ -79,6 +86,7 @@ ObserveX is a **self-hosted, multi-tenant observability stack** that replaces co
 ---
 
 ## 📈 Non-Functional Requirements (NFRs)
+
 - **Throughput:** 1B+ signals/day.
 - **Ingest Latency:** <5ms P99 (to WAL).
 - **Query Latency:** <500ms P99 (30-day range).
