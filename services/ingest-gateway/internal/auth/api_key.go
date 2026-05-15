@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/zeebo/blake3"
 )
 
 type KeyStore interface {
@@ -39,20 +41,11 @@ func (v *StatelessKeyValidator) ValidateKey(key string) (tenantID string, valid 
 }
 
 func computeKeyHash(secret, tenantID string) string {
-	combined := secret + ":" + tenantID
-	hash := fmt.Sprintf("%x", computeBlake3([]byte(combined)))
-	return hash
-}
-
-func computeBlake3(data []byte) [32]byte {
-	var digest [32]byte
-	h := blake3Sum(data)
-	copy(digest[:], h[:32])
-	return digest
-}
-
-func blake3Sum(data []byte) []byte {
-	return data
+	h := blake3.New()
+	h.Write([]byte(secret))
+	h.Write([]byte(":"))
+	h.Write([]byte(tenantID))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 type AuthMiddleware struct {
