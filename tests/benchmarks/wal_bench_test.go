@@ -1,12 +1,11 @@
 package benchmarks
 
 import (
+	"github.com/rowjay007/observe-x/pkg/signal"
+	"github.com/rowjay007/observe-x/pkg/wal"
 	"os"
 	"testing"
 	"time"
-
-	"github.com/rowjay007/observe-x/pkg/signal"
-	"github.com/rowjay007/observe-x/pkg/wal"
 )
 
 func BenchmarkWALWrite(b *testing.B) {

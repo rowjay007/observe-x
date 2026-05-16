@@ -5,17 +5,16 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sync"
-
 	"github.com/rowjay007/observe-x/pkg/signal"
+	"sync"
 )
 
 type Client struct {
-	mu     sync.Mutex
-	db     *sql.DB
-	addr   string
+	mu        sync.Mutex
+	db        *sql.DB
+	addr      string
 	batchSize int
-	batch  []*signal.Signal
+	batch     []*signal.Signal
 }
 
 func NewClient(addr string, batchSize int) (*Client, error) {
@@ -148,19 +147,19 @@ func (c *Client) writeLogs(ctx context.Context, signals []*signal.Signal) error 
 
 type logData struct {
 	ServiceName string
-	Severity   string
-	Body       string
-	TraceID    string
-	SpanID     string
+	Severity    string
+	Body        string
+	TraceID     string
+	SpanID      string
 }
 
 func parseLogPayload(sig *signal.Signal) logData {
 	return logData{
 		ServiceName: sig.Attributes["service_name"],
-		Severity:   sig.Attributes["severity"],
-		Body:       string(sig.Payload),
-		TraceID:    sig.Attributes["trace_id"],
-		SpanID:     sig.Attributes["span_id"],
+		Severity:    sig.Attributes["severity"],
+		Body:        string(sig.Payload),
+		TraceID:     sig.Attributes["trace_id"],
+		SpanID:      sig.Attributes["span_id"],
 	}
 }
 
@@ -187,13 +186,13 @@ func (c *Client) writeTraces(ctx context.Context, signals []*signal.Signal) erro
 }
 
 type traceData struct {
-	TraceID      string
-	SpanID       string
-	ParentSpanID string
+	TraceID       string
+	SpanID        string
+	ParentSpanID  string
 	OperationName string
-	ServiceName  string
-	StatusCode   string
-	DurationNs   int64
+	ServiceName   string
+	StatusCode    string
+	DurationNs    int64
 }
 
 func parseTracePayload(sig *signal.Signal) traceData {

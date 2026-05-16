@@ -4,10 +4,9 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
+	"github.com/zeebo/blake3"
 	"net/http"
 	"strings"
-
-	"github.com/zeebo/blake3"
 )
 
 type KeyStore interface {
