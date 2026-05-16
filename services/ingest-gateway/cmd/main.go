@@ -4,14 +4,21 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rowjay007/observe-x/pkg/signal"
 	"github.com/rowjay007/observe-x/pkg/engine"
+	"github.com/rowjay007/observe-x/pkg/signal"
+	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/auth"
 )
 
 func main() {
+	apiSecret, ok := os.LookupEnv("OBSERVE_X_API_SECRET")
+	if !ok || apiSecret == "" {
+		log.Fatal("OBSERVE_X_API_SECRET environment variable is required")
+	}
+
 	processingEngine, err := engine.NewProcessingEngine("/tmp/observex/wal", 0.1, 1000)
 	if err != nil {
 		log.Fatalf("Failed to create processing engine: %v", err)
@@ -23,14 +30,51 @@ func main() {
 		log.Fatalf("Failed to start processing engine: %v", err)
 	}
 
+	authMiddleware := auth.NewAuthMiddleware(auth.NewStatelessKeyValidator(apiSecret))
+	r := buildRouter(authMiddleware, processingEngine, ctx)
+
+	server := &http.Server{
+		Addr:    ":4318",
+		Handler: r,
+	}
+
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("failed to start server: %v", err)
+	}
+}
+
+func buildRouter(authMiddleware *auth.AuthMiddleware, processingEngine *engine.ProcessingEngine, ctx context.Context) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 
-	r.POST("/v1/ingest", func(c *gin.Context) {
+	authorized := r.Group("/")
+	authorized.Use(func(c *gin.Context) {
+		authMiddleware.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			c.Request = r
+			c.Next()
+		})).ServeHTTP(c.Writer, c.Request)
+
+		if c.Writer.Written() {
+			c.Abort()
+			return
+		}
+	})
+
+	authorized.POST("/v1/ingest", ingestHandler(processingEngine, ctx))
+
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	return r
+}
+
+func ingestHandler(processingEngine *engine.ProcessingEngine, ctx context.Context) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		var req struct {
 			TenantID string            `json:"tenant_id"`
-			Type     signal.Type        `json:"type"`
-			Payload  []byte           `json:"payload"`
+			Type     signal.Type       `json:"type"`
+			Payload  []byte            `json:"payload"`
 			Attrs    map[string]string `json:"attributes"`
 		}
 
@@ -39,8 +83,18 @@ func main() {
 			return
 		}
 
+		tenantID := c.Request.Header.Get("X-Tenant-ID")
+		if tenantID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing tenant id"})
+			return
+		}
+		if req.TenantID != "" && req.TenantID != tenantID {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "tenant id mismatch between auth and request"})
+			return
+		}
+
 		sig := signal.Signal{
-			TenantID:   req.TenantID,
+			TenantID:   tenantID,
 			Type:       req.Type,
 			Payload:    req.Payload,
 			Attributes: req.Attrs,
@@ -56,13 +110,5 @@ func main() {
 			"status":    "accepted",
 			"timestamp": time.Now().Unix(),
 		})
-	})
-
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
-
-	if err := r.Run(":4318"); err != nil {
-		log.Fatalf("failed to start server: %v", err)
 	}
 }
