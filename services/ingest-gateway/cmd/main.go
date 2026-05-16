@@ -2,15 +2,14 @@ package main
 
 import (
 	"context"
-	"log"
-	"net/http"
-	"os"
-	"time"
-
 	"github.com/gin-gonic/gin"
 	"github.com/rowjay007/observe-x/pkg/engine"
 	"github.com/rowjay007/observe-x/pkg/signal"
 	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/auth"
+	"log"
+	"net/http"
+	"os"
+	"time"
 )
 
 func main() {

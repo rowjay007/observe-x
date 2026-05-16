@@ -4,12 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/rowjay007/observe-x/pkg/engine"
+	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/auth"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/rowjay007/observe-x/pkg/engine"
-	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/auth"
 )
 
 func TestBuildRouterRequiresAuth(t *testing.T) {
