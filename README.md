@@ -114,6 +114,7 @@ go build ./services/stream-processor/...
 ## Status
 
 **Phase 1: Ingest Foundation** (Active)
+
 - ✅ Project initialization and workspace setup
 - ✅ ingest-gateway with OTLP HTTP receiver
 - ✅ API key authentication (BLAKE3 hashing)
