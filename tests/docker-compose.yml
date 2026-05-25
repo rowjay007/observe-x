@@ -12,7 +12,7 @@ services:
       CLICKHOUSE_PASSWORD: ""
     volumes:
       - clickhouse_data:/var/lib/clickhouse
-      - ./infrastructure/clickhouse:/docker-entrypoint-initdb.d
+      - ../infrastructure/clickhouse:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
       interval: 10s
