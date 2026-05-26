@@ -64,7 +64,7 @@ func (b *ClickHouseBackend) Query(ctx context.Context, query string) (interface{
 	if b.client == nil {
 		return nil, nil
 	}
-	return nil, nil
+	return b.client.Query(ctx, query)
 }
 
 // Flush forces the client to write any buffered signals to ClickHouse.

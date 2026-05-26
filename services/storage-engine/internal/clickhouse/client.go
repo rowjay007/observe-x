@@ -5,8 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/rowjay007/observe-x/pkg/signal"
 	"sync"
+
+	"github.com/rowjay007/observe-x/pkg/signal"
 )
 
 type Client struct {
@@ -51,6 +52,57 @@ func (c *Client) Write(ctx context.Context, signals []signal.Signal) error {
 	}
 
 	return nil
+}
+
+func (c *Client) Query(ctx context.Context, query string) ([]map[string]interface{}, error) {
+	if query == "" {
+		return nil, fmt.Errorf("query cannot be empty")
+	}
+
+	rows, err := c.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute query: %w", err)
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read query columns: %w", err)
+	}
+
+	results := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		values := make([]interface{}, len(columns))
+		scanTargets := make([]interface{}, len(columns))
+		for i := range values {
+			scanTargets[i] = &values[i]
+		}
+
+		if err := rows.Scan(scanTargets...); err != nil {
+			return nil, fmt.Errorf("failed to scan query row: %w", err)
+		}
+
+		row := make(map[string]interface{}, len(columns))
+		for i, column := range columns {
+			row[column] = normalizeQueryValue(values[i])
+		}
+		results = append(results, row)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("query iteration failed: %w", err)
+	}
+
+	return results, nil
+}
+
+func normalizeQueryValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case []byte:
+		return string(typed)
+	default:
+		return value
+	}
 }
 
 func (c *Client) flushBatch(ctx context.Context) error {

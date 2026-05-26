@@ -2,6 +2,7 @@ package actor
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/rowjay007/observe-x/pkg/cep"
@@ -15,11 +16,31 @@ type Actor interface {
 	Mailbox() chan<- signal.Signal
 }
 
+type Stats struct {
+	Processed      int64
+	Dropped        int64
+	LastSignalType signal.Type
+	LastEventType  cep.EventType
+	LastSignalAt   time.Time
+	LastEventAt    time.Time
+	Running        bool
+}
+
 type TenantActor struct {
 	tenantID  string
 	inbox     chan signal.Signal
 	cepEngine *cep.Engine
 	sampler   *sampling.AdaptiveSampler
+
+	mu             sync.RWMutex
+	stopOnce       sync.Once
+	running        bool
+	processed      int64
+	dropped        int64
+	lastSignalType signal.Type
+	lastEventType  cep.EventType
+	lastSignalAt   time.Time
+	lastEventAt    time.Time
 }
 
 func NewTenantActor(tenantID string, bufferSize int) *TenantActor {
@@ -36,12 +57,23 @@ func (a *TenantActor) Mailbox() chan<- signal.Signal {
 }
 
 func (a *TenantActor) Start(ctx context.Context) error {
+	a.mu.Lock()
+	if a.running {
+		a.mu.Unlock()
+		return nil
+	}
+	a.running = true
+	a.mu.Unlock()
+
 	a.cepEngine.AddRule(cep.NewHighErrorRateRule(a.tenantID, 5*time.Minute, 0.05))
 
 	go func() {
 		for {
 			select {
-			case sig := <-a.inbox:
+			case sig, ok := <-a.inbox:
+				if !ok {
+					return
+				}
 				a.processSignal(sig)
 			case <-ctx.Done():
 				return
@@ -52,15 +84,56 @@ func (a *TenantActor) Start(ctx context.Context) error {
 }
 
 func (a *TenantActor) Stop() error {
-	close(a.inbox)
+	a.stopOnce.Do(func() {
+		a.mu.Lock()
+		a.running = false
+		a.mu.Unlock()
+		close(a.inbox)
+	})
 	return nil
 }
 
+func (a *TenantActor) IsRunning() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.running
+}
+
+func (a *TenantActor) Stats() Stats {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+
+	return Stats{
+		Processed:      a.processed,
+		Dropped:        a.dropped,
+		LastSignalType: a.lastSignalType,
+		LastEventType:  a.lastEventType,
+		LastSignalAt:   a.lastSignalAt,
+		LastEventAt:    a.lastEventAt,
+		Running:        a.running,
+	}
+}
+
 func (a *TenantActor) processSignal(sig signal.Signal) {
+	now := time.Now()
+
+	a.mu.Lock()
+	a.processed++
+	a.lastSignalType = sig.Type
+	a.lastSignalAt = now
+	a.mu.Unlock()
+
 	event := a.cepEngine.Process(context.Background(), sig)
 	if event != nil {
+		a.mu.Lock()
+		a.lastEventType = event.Type
+		a.lastEventAt = event.Timestamp
+		a.mu.Unlock()
 	}
 
-	if a.sampler.Decide(sig) == sampling.Keep {
+	if a.sampler.Decide(sig) == sampling.Drop {
+		a.mu.Lock()
+		a.dropped++
+		a.mu.Unlock()
 	}
 }

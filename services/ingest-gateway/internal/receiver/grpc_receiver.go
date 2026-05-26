@@ -2,6 +2,7 @@ package receiver
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -22,22 +24,24 @@ import (
 // It listens on a configurable address and validates API keys from
 // gRPC metadata before routing signals to the processing engine.
 type GRPCReceiver struct {
-	addr       string
-	server     *grpc.Server
-	engine     *engine.ProcessingEngine
-	keyStore   auth.KeyStore
-	logger     *zap.Logger
-	mu         sync.Mutex
-	running    bool
+	addr      string
+	server    *grpc.Server
+	engine    *engine.ProcessingEngine
+	keyStore  auth.KeyStore
+	logger    *zap.Logger
+	tlsConfig *tls.Config
+	mu        sync.Mutex
+	running   bool
 }
 
 // NewGRPCReceiver creates a new gRPC receiver bound to the given address.
-func NewGRPCReceiver(addr string, eng *engine.ProcessingEngine, keyStore auth.KeyStore, logger *zap.Logger) *GRPCReceiver {
+func NewGRPCReceiver(addr string, eng *engine.ProcessingEngine, keyStore auth.KeyStore, logger *zap.Logger, tlsConfig *tls.Config) *GRPCReceiver {
 	return &GRPCReceiver{
-		addr:     addr,
-		engine:   eng,
-		keyStore: keyStore,
-		logger:   logger,
+		addr:      addr,
+		engine:    eng,
+		keyStore:  keyStore,
+		logger:    logger,
+		tlsConfig: tlsConfig,
 	}
 }
 
@@ -56,9 +60,12 @@ func (r *GRPCReceiver) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to listen on %s: %w", r.addr, err)
 	}
 
-	r.server = grpc.NewServer(
-		grpc.UnaryInterceptor(r.authInterceptor),
-	)
+	serverOpts := []grpc.ServerOption{grpc.UnaryInterceptor(r.authInterceptor)}
+	if r.tlsConfig != nil {
+		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(r.tlsConfig)))
+	}
+
+	r.server = grpc.NewServer(serverOpts...)
 
 	// Register the ingest service handler
 	RegisterIngestServiceServer(r.server, &ingestServiceHandler{

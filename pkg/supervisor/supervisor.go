@@ -2,18 +2,28 @@ package supervisor
 
 import (
 	"context"
-	"log"
 	"sync"
 	"time"
-	"github.com/rowjay007/observe-x/pkg/signal"
+
 	"github.com/rowjay007/observe-x/pkg/actor"
+	"github.com/rowjay007/observe-x/pkg/signal"
 )
 
+type Stats struct {
+	ActorCount   int
+	TotalRouted  int64
+	LastHealthAt time.Time
+}
+
 type Supervisor struct {
-	actors    map[string]*actor.TenantActor
-	mu        sync.RWMutex
-	ctx       context.Context
-	cancel    context.CancelFunc
+	actors       map[string]*actor.TenantActor
+	mu           sync.RWMutex
+	ctx          context.Context
+	cancel       context.CancelFunc
+	started      bool
+	stopOnce     sync.Once
+	totalRouted  int64
+	lastHealthAt time.Time
 }
 
 func NewSupervisor() *Supervisor {
@@ -26,45 +36,76 @@ func NewSupervisor() *Supervisor {
 }
 
 func (s *Supervisor) Start() {
+	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		return
+	}
+	s.started = true
+	s.mu.Unlock()
+
 	go s.monitor()
 }
 
-func (s *Supervisor) Stop() {
-	s.cancel()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, a := range s.actors {
-		a.Stop()
-	}
+func (s *Supervisor) Stop() error {
+	s.stopOnce.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, tenantActor := range s.actors {
+			_ = tenantActor.Stop()
+		}
+		s.actors = make(map[string]*actor.TenantActor)
+	})
+	return nil
 }
 
 func (s *Supervisor) GetOrCreateActor(tenantID string) *actor.TenantActor {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
-	if a, exists := s.actors[tenantID]; exists {
-		return a
+
+	if existing, ok := s.actors[tenantID]; ok {
+		return existing
 	}
-	
+
 	newActor := actor.NewTenantActor(tenantID, 4096)
 	s.actors[tenantID] = newActor
-	newActor.Start(s.ctx)
+	_ = newActor.Start(s.ctx)
 	return newActor
 }
 
 func (s *Supervisor) RouteToTenant(tenantID string, sig signal.Signal) {
 	actor := s.GetOrCreateActor(tenantID)
+	if actor == nil {
+		return
+	}
+
 	select {
 	case actor.Mailbox() <- sig:
+		s.mu.Lock()
+		s.totalRouted++
+		s.mu.Unlock()
 	default:
-		log.Printf("Actor mailbox full for tenant %s, dropping signal", tenantID)
+	}
+}
+
+func (s *Supervisor) Stats() Stats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return Stats{
+		ActorCount:   len(s.actors),
+		TotalRouted:  s.totalRouted,
+		LastHealthAt: s.lastHealthAt,
 	}
 }
 
 func (s *Supervisor) monitor() {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ticker.C:
@@ -76,9 +117,13 @@ func (s *Supervisor) monitor() {
 }
 
 func (s *Supervisor) checkHealth() {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, a := range s.actors {
-		_ = a
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.lastHealthAt = time.Now()
+	for tenantID, tenantActor := range s.actors {
+		if !tenantActor.IsRunning() {
+			delete(s.actors, tenantID)
+		}
 	}
 }

@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,6 +17,7 @@ import (
 	"github.com/rowjay007/observe-x/pkg/engine"
 	pkgsignal "github.com/rowjay007/observe-x/pkg/signal"
 	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/auth"
+	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/otlp"
 	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/receiver"
 	"go.uber.org/zap"
 )
@@ -48,8 +52,54 @@ func main() {
 	keyStore := auth.NewStatelessKeyValidator(apiSecret)
 	authMiddleware := auth.NewAuthMiddleware(keyStore)
 
+	otlpSignalChan := make(chan pkgsignal.Signal, 4096)
+	go func() {
+		for {
+			select {
+			case sig, ok := <-otlpSignalChan:
+				if !ok {
+					return
+				}
+				_ = processingEngine.ProcessSignal(ctx, sig)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	serverTLSConfig, err := loadServerTLSConfig()
+	if err != nil {
+		log.Fatalf("failed to load TLS config: %v", err)
+	}
+
 	// ── HTTP Server on :4318 ───────────────────────────────────────────
 	r := buildRouter(authMiddleware, processingEngine, ctx)
+	r.POST("/v1/otlp/traces", func(c *gin.Context) {
+		tenantID := c.GetHeader("X-Tenant-ID")
+		if tenantID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing tenant id"})
+			return
+		}
+
+		payload, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if len(payload) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "empty otlp payload"})
+			return
+		}
+
+		receiver := otlp.NewTraceReceiver(otlpSignalChan, tenantID)
+		if err := receiver.Accept(c.Request.Context(), payload); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
+		}
+
+		c.JSON(http.StatusAccepted, gin.H{"status": "accepted"})
+	})
+
 	httpServer := &http.Server{
 		Addr:         getEnv("OBSERVE_X_HTTP_ADDR", ":4318"),
 		Handler:      r,
@@ -60,7 +110,7 @@ func main() {
 
 	// ── gRPC Server on :4317 ───────────────────────────────────────────
 	grpcAddr := getEnv("OBSERVE_X_GRPC_ADDR", ":4317")
-	grpcReceiver := receiver.NewGRPCReceiver(grpcAddr, processingEngine, keyStore, logger)
+	grpcReceiver := receiver.NewGRPCReceiver(grpcAddr, processingEngine, keyStore, logger, serverTLSConfig)
 
 	// ── StatsD UDP Server on :8125 ─────────────────────────────────────
 	statsdAddr := getEnv("OBSERVE_X_STATSD_ADDR", ":8125")
@@ -74,7 +124,7 @@ func main() {
 	go func() {
 		defer wg.Done()
 		logger.Info("HTTP server starting", zap.String("addr", httpServer.Addr))
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := serveHTTP(httpServer, serverTLSConfig, logger); err != nil && err != http.ErrServerClosed {
 			logger.Fatal("HTTP server failed", zap.Error(err))
 		}
 	}()
@@ -95,7 +145,6 @@ func main() {
 		}
 	}()
 
-	// ── Graceful shutdown ──────────────────────────────────────────────
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
@@ -176,7 +225,6 @@ func ingestHandler(processingEngine *engine.ProcessingEngine, ctx context.Contex
 		}
 
 		if err := processingEngine.ProcessSignal(ctx, sig); err != nil {
-			// Load shedding: if the engine is overloaded, return 429
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "system overloaded, try again later"})
 			return
 		}
@@ -186,6 +234,33 @@ func ingestHandler(processingEngine *engine.ProcessingEngine, ctx context.Contex
 			"timestamp": time.Now().Unix(),
 		})
 	}
+}
+
+func serveHTTP(server *http.Server, tlsConfig *tls.Config, logger *zap.Logger) error {
+	if tlsConfig == nil {
+		logger.Info("HTTP server starting", zap.String("addr", server.Addr))
+		return server.ListenAndServe()
+	}
+
+	listener, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		return err
+	}
+
+	return server.Serve(tls.NewListener(listener, tlsConfig))
+}
+
+func loadServerTLSConfig() (*tls.Config, error) {
+	certFile := getEnv("OBSERVE_X_TLS_CERT_FILE", "")
+	keyFile := getEnv("OBSERVE_X_TLS_KEY_FILE", "")
+	caFile := getEnv("OBSERVE_X_TLS_CA_FILE", "")
+
+	if certFile == "" && keyFile == "" && caFile == "" {
+		return nil, nil
+	}
+
+	cfg := &auth.TLSConfig{CertFile: certFile, KeyFile: keyFile, CAFile: caFile}
+	return cfg.LoadServerConfig()
 }
 
 func getEnv(key, fallback string) string {
