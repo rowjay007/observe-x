@@ -2,7 +2,6 @@ package clickhouse
 
 import (
 	"context"
-
 	"github.com/rowjay007/observe-x/pkg/signal"
 )
 

@@ -3,6 +3,13 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"github.com/gin-gonic/gin"
+	"github.com/rowjay007/observe-x/pkg/engine"
+	pkgsignal "github.com/rowjay007/observe-x/pkg/signal"
+	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/auth"
+	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/otlp"
+	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/receiver"
+	"go.uber.org/zap"
 	"io"
 	"log"
 	"net"
@@ -12,14 +19,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/gin-gonic/gin"
-	"github.com/rowjay007/observe-x/pkg/engine"
-	pkgsignal "github.com/rowjay007/observe-x/pkg/signal"
-	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/auth"
-	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/otlp"
-	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/receiver"
-	"go.uber.org/zap"
 )
 
 func main() {

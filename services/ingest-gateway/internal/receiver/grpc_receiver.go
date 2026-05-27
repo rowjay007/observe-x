@@ -4,11 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"net"
-	"strings"
-	"sync"
-	"time"
-
 	"github.com/rowjay007/observe-x/pkg/engine"
 	"github.com/rowjay007/observe-x/pkg/signal"
 	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/auth"
@@ -18,6 +13,10 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"net"
+	"strings"
+	"sync"
+	"time"
 )
 
 // GRPCReceiver implements a gRPC server for OTLP signal ingestion.

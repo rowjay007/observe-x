@@ -2,11 +2,10 @@ package supervisor
 
 import (
 	"context"
-	"sync"
-	"time"
-
 	"github.com/rowjay007/observe-x/pkg/actor"
 	"github.com/rowjay007/observe-x/pkg/signal"
+	"sync"
+	"time"
 )
 
 type Stats struct {

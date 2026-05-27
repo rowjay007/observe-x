@@ -5,9 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sync"
-
 	"github.com/rowjay007/observe-x/pkg/signal"
+	"sync"
 )
 
 type Client struct {

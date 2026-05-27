@@ -2,12 +2,11 @@ package actor
 
 import (
 	"context"
-	"sync"
-	"time"
-
 	"github.com/rowjay007/observe-x/pkg/cep"
 	"github.com/rowjay007/observe-x/pkg/sampling"
 	"github.com/rowjay007/observe-x/pkg/signal"
+	"sync"
+	"time"
 )
 
 type Actor interface {
