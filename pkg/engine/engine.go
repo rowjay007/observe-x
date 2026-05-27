@@ -4,15 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/rowjay007/observe-x/pkg/sampling"
 	"github.com/rowjay007/observe-x/pkg/signal"
 	"github.com/rowjay007/observe-x/pkg/supervisor"
 	"github.com/rowjay007/observe-x/pkg/wal"
 	storageclickhouse "github.com/rowjay007/observe-x/services/storage-engine/clickhouse"
-	"os"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
 // ErrOverloaded is returned when the processing engine's internal buffers
@@ -177,8 +178,17 @@ func (e *ProcessingEngine) Start(ctx context.Context) error {
 
 	e.supervisor.Start()
 
+	pipeline, err := Chain(ctx, e.ingestChan, DecodeStage, ValidateStage, EnrichStage)
+	if err != nil {
+		return err
+	}
+
 	// Start the background pipeline consumer
-	go e.runPipeline(ctx)
+	go func() {
+		for sig := range pipeline {
+			e.processSingleSignal(ctx, sig)
+		}
+	}()
 
 	e.started = true
 	return nil
