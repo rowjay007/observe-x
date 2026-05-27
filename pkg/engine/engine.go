@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/rowjay007/observe-x/pkg/signal"
 	"github.com/rowjay007/observe-x/pkg/supervisor"
 	"github.com/rowjay007/observe-x/pkg/wal"
+	storageclickhouse "github.com/rowjay007/observe-x/services/storage-engine/clickhouse"
 )
 
 // ErrOverloaded is returned when the processing engine's internal buffers
@@ -119,11 +121,12 @@ func EnrichStage(ctx context.Context, in <-chan signal.Signal) (<-chan signal.Si
 //   - Each pipeline stage uses bounded channels (1024) for natural flow control.
 //   - The WAL write is synchronous on the hot path for durability guarantees.
 type ProcessingEngine struct {
-	walInstance   *wal.WAL
-	supervisor    *supervisor.Supervisor
-	sampler       *sampling.AdaptiveSampler
-	samplingRate  float64
-	maxTraceQueue int
+	walInstance    *wal.WAL
+	storageBackend *storageclickhouse.Backend
+	supervisor     *supervisor.Supervisor
+	sampler        *sampling.AdaptiveSampler
+	samplingRate   float64
+	maxTraceQueue  int
 
 	// ingestChan is the bounded entry point for all signals. When full,
 	// new signals are rejected with ErrOverloaded (load shedding).
@@ -146,13 +149,20 @@ func NewProcessingEngine(walPath string, samplingRate float64, maxTraceQueue int
 		return nil, err
 	}
 
+	storageAddr := os.Getenv("OBSERVE_X_CLICKHOUSE_ADDR")
+	if storageAddr == "" {
+		storageAddr = "localhost:9000"
+	}
+	storageBackend, _ := storageclickhouse.NewBackend(storageAddr, 1000)
+
 	return &ProcessingEngine{
-		walInstance:   walInstance,
-		supervisor:    supervisor.NewSupervisor(),
-		sampler:       sampling.NewAdaptiveSampler(samplingRate, maxTraceQueue),
-		samplingRate:  samplingRate,
-		maxTraceQueue: maxTraceQueue,
-		ingestChan:    make(chan signal.Signal, 65536),
+		walInstance:    walInstance,
+		storageBackend: storageBackend,
+		supervisor:     supervisor.NewSupervisor(),
+		sampler:        sampling.NewAdaptiveSampler(samplingRate, maxTraceQueue),
+		samplingRate:   samplingRate,
+		maxTraceQueue:  maxTraceQueue,
+		ingestChan:     make(chan signal.Signal, 65536),
 	}, nil
 }
 
@@ -179,6 +189,12 @@ func (e *ProcessingEngine) Start(ctx context.Context) error {
 func (e *ProcessingEngine) Stop() error {
 	e.supervisor.Stop()
 	close(e.ingestChan)
+
+	if e.storageBackend != nil {
+		_ = e.storageBackend.Flush(context.Background())
+		_ = e.storageBackend.Close()
+	}
+
 	return e.walInstance.Close()
 }
 
@@ -238,6 +254,10 @@ func (e *ProcessingEngine) processSingleSignal(ctx context.Context, sig signal.S
 		if err := e.walInstance.Write(sig.Payload); err == nil {
 			e.walWrites.Add(1)
 		}
+	}
+
+	if e.storageBackend != nil {
+		_ = e.storageBackend.Write(ctx, []signal.Signal{sig})
 	}
 }
 
