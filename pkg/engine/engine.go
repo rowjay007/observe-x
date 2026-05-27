@@ -4,16 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"sync"
-	"sync/atomic"
-	"time"
-
 	"github.com/rowjay007/observe-x/pkg/sampling"
 	"github.com/rowjay007/observe-x/pkg/signal"
 	"github.com/rowjay007/observe-x/pkg/supervisor"
 	"github.com/rowjay007/observe-x/pkg/wal"
 	storageclickhouse "github.com/rowjay007/observe-x/services/storage-engine/clickhouse"
+	"os"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // ErrOverloaded is returned when the processing engine's internal buffers
