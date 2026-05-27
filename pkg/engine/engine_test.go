@@ -2,9 +2,8 @@ package engine
 
 import (
 	"context"
-	"testing"
-
 	"github.com/rowjay007/observe-x/pkg/signal"
+	"testing"
 )
 
 func TestProcessSingleSignalPersistsToWAL(t *testing.T) {
