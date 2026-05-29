@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -32,6 +33,33 @@ func TestValidateKeyInvalidKey(t *testing.T) {
 	_, valid = validator.ValidateKey("tenant:wronghash")
 	if valid {
 		t.Fatal("expected wrong hash to be invalid")
+	}
+}
+
+func TestMemoryKeyStoreLifecycle(t *testing.T) {
+	store := NewMemoryKeyStore()
+	tenantID := "acme"
+	key := store.Add(tenantID, "raw-secret-123")
+
+	gotTenant, valid := store.ValidateKey(key)
+	if !valid || gotTenant != tenantID {
+		t.Fatalf("expected valid key for %s, got valid=%v tenant=%q", tenantID, valid, gotTenant)
+	}
+
+	store.Revoke(key)
+	if _, valid := store.ValidateKey(key); valid {
+		t.Fatal("expected revoked key to be invalid")
+	}
+}
+
+func TestMemoryKeyStoreRejectsTenantSpoof(t *testing.T) {
+	store := NewMemoryKeyStore()
+	key := store.Add("acme", "raw-secret")
+	// Tamper with the tenant id segment of an otherwise-valid key.
+	parts := strings.SplitN(key, ":", 2)
+	spoofed := "evil:" + parts[1]
+	if _, valid := store.ValidateKey(spoofed); valid {
+		t.Fatal("expected spoofed tenant prefix to be rejected")
 	}
 }
 

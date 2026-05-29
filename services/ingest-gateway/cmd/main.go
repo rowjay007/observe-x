@@ -3,83 +3,231 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"github.com/gin-gonic/gin"
-	"github.com/rowjay007/observe-x/pkg/engine"
-	pkgsignal "github.com/rowjay007/observe-x/pkg/signal"
-	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/auth"
-	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/otlp"
-	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/receiver"
-	"go.uber.org/zap"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+
+	"github.com/rowjay007/observe-x/pkg/engine"
+	"github.com/rowjay007/observe-x/pkg/observability"
+	pkgsignal "github.com/rowjay007/observe-x/pkg/signal"
+	chstorage "github.com/rowjay007/observe-x/pkg/storage/clickhouse"
+	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/auth"
+	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/otlp"
+	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/receiver"
 )
 
 func main() {
 	logger, err := zap.NewProduction()
 	if err != nil {
-		log.Fatalf("failed to create logger: %v", err)
+		// Logger setup precedes the logger, so stdlib is acceptable here.
+		panic("ingest-gateway: zap init failed: " + err.Error())
 	}
-	defer logger.Sync()
+	defer func() { _ = logger.Sync() }()
 
 	apiSecret, ok := os.LookupEnv("OBSERVE_X_API_SECRET")
 	if !ok || apiSecret == "" {
-		log.Fatal("OBSERVE_X_API_SECRET environment variable is required")
+		logger.Fatal("OBSERVE_X_API_SECRET is required")
 	}
 
 	walPath := getEnv("OBSERVE_X_WAL_PATH", "/tmp/observex/wal")
 
-	processingEngine, err := engine.NewProcessingEngine(walPath, 0.1, 1000)
-	if err != nil {
-		log.Fatalf("Failed to create processing engine: %v", err)
+	engineOpts := engine.Options{
+		WALPath:       walPath,
+		SamplingRate:  envFloat("OBSERVE_X_SAMPLING_RATE", 0.1),
+		MaxTraceQueue: envInt("OBSERVE_X_TRACE_QUEUE", 1000),
+		ClickHouse: &chstorage.Options{
+			Addr:           getEnv("OBSERVE_X_CLICKHOUSE_ADDR", "localhost:9000"),
+			Database:       getEnv("OBSERVE_X_CLICKHOUSE_DB", "observex"),
+			Username:       os.Getenv("OBSERVE_X_CLICKHOUSE_USER"),
+			Password:       os.Getenv("OBSERVE_X_CLICKHOUSE_PASSWORD"),
+			MigrateOnStart: true,
+		},
 	}
-	defer processingEngine.Stop()
+
+	procEngine, err := engine.NewProcessingEngineWithOptions(engineOpts)
+	if err != nil {
+		logger.Fatal("engine init failed", zap.Error(err))
+	}
+	defer func() { _ = procEngine.Stop() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	if err := processingEngine.Start(ctx); err != nil {
-		log.Fatalf("Failed to start processing engine: %v", err)
+	if err := procEngine.Start(ctx); err != nil {
+		logger.Fatal("engine start failed", zap.Error(err))
 	}
 
 	keyStore := auth.NewStatelessKeyValidator(apiSecret)
-	authMiddleware := auth.NewAuthMiddleware(keyStore)
+	authMW := auth.NewAuthMiddleware(keyStore)
 
-	otlpSignalChan := make(chan pkgsignal.Signal, 4096)
+	serverTLS, err := loadServerTLSConfig()
+	if err != nil {
+		logger.Fatal("tls config", zap.Error(err))
+	}
+
+	// ── HTTP server (4318) ────────────────────────────────────────────
+	router := buildRouter(authMW, procEngine, logger)
+	httpServer := &http.Server{
+		Addr:         getEnv("OBSERVE_X_HTTP_ADDR", ":4318"),
+		Handler:      router,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	// ── gRPC server (4317) ────────────────────────────────────────────
+	grpcReceiver := receiver.NewGRPCReceiver(
+		getEnv("OBSERVE_X_GRPC_ADDR", ":4317"),
+		procEngine, keyStore, logger, serverTLS,
+	)
+
+	// ── StatsD UDP (8125) ─────────────────────────────────────────────
+	statsdReceiver := receiver.NewStatsDReceiver(
+		getEnv("OBSERVE_X_STATSD_ADDR", ":8125"),
+		procEngine,
+		getEnv("OBSERVE_X_DEFAULT_TENANT", "default"),
+		logger,
+	)
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
 	go func() {
-		for {
-			select {
-			case sig, ok := <-otlpSignalChan:
-				if !ok {
-					return
-				}
-				_ = processingEngine.ProcessSignal(ctx, sig)
-			case <-ctx.Done():
-				return
-			}
+		defer wg.Done()
+		logger.Info("HTTP listener", zap.String("addr", httpServer.Addr), zap.Bool("tls", serverTLS != nil))
+		if err := serveHTTP(httpServer, serverTLS); err != nil && err != http.ErrServerClosed {
+			logger.Error("http server", zap.Error(err))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := grpcReceiver.Start(ctx); err != nil {
+			logger.Error("grpc receiver", zap.Error(err))
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if err := statsdReceiver.Start(ctx); err != nil {
+			logger.Error("statsd receiver", zap.Error(err))
 		}
 	}()
 
-	serverTLSConfig, err := loadServerTLSConfig()
-	if err != nil {
-		log.Fatalf("failed to load TLS config: %v", err)
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	logger.Info("shutdown requested")
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("http shutdown", zap.Error(err))
+	}
+	grpcReceiver.Stop()
+	statsdReceiver.Stop()
+	wg.Wait()
+	logger.Info("shutdown complete")
+}
+
+// buildRouter wires the gin router used by the HTTP listener. It is
+// exported indirectly via tests in this package.
+func buildRouter(authMW *auth.AuthMiddleware, procEngine *engine.ProcessingEngine, logger *zap.Logger) *gin.Engine {
+	if os.Getenv("GIN_MODE") == "" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+	r := gin.New()
+	r.Use(gin.Recovery())
+
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+	r.GET("/ready", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ready"})
+	})
+
+	// Metrics endpoint must be unauthenticated for scrapers (NetworkPolicy
+	// limits who can reach it in Phase C).
+	r.GET("/metrics", gin.WrapH(observability.MetricsHandler()))
+
+	// pprof gated by env flag — never on by default in production.
+	if os.Getenv("OBSERVE_X_PPROF_ENABLED") == "true" {
+		mux := http.NewServeMux()
+		observability.RegisterDebugHandlers(mux)
+		r.Any("/debug/pprof/*any", gin.WrapH(mux))
 	}
 
-	// ── HTTP Server on :4318 ───────────────────────────────────────────
-	r := buildRouter(authMiddleware, processingEngine, ctx)
-	r.POST("/v1/otlp/traces", func(c *gin.Context) {
-		tenantID := c.GetHeader("X-Tenant-ID")
+	authorized := r.Group("/")
+	authorized.Use(ginAuth(authMW))
+	authorized.POST("/v1/ingest", ingestHandler(procEngine, logger))
+	authorized.POST("/v1/otlp/traces", otlpTraceHandler(procEngine, logger))
+
+	return r
+}
+
+func ginAuth(mw *auth.AuthMiddleware) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		mw.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			c.Request = r
+			c.Next()
+		})).ServeHTTP(c.Writer, c.Request)
+		if c.Writer.Written() {
+			c.Abort()
+		}
+	}
+}
+
+func ingestHandler(procEngine *engine.ProcessingEngine, logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			TenantID string            `json:"tenant_id"`
+			Type     pkgsignal.Type    `json:"type"`
+			Payload  []byte            `json:"payload"`
+			Attrs    map[string]string `json:"attributes"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		tenantID := c.Request.Header.Get("X-Tenant-ID")
 		if tenantID == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing tenant id"})
 			return
 		}
+		if req.TenantID != "" && req.TenantID != tenantID {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "tenant id mismatch"})
+			return
+		}
+		sig := pkgsignal.Signal{
+			TenantID:   tenantID,
+			Type:       req.Type,
+			Payload:    req.Payload,
+			Attributes: req.Attrs,
+			ReceivedAt: time.Now().UTC(),
+		}
+		if err := procEngine.ProcessSignal(c.Request.Context(), sig); err != nil {
+			logger.Warn("backpressure", zap.String("tenant", tenantID), zap.Error(err))
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "overloaded, retry later"})
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"status": "accepted"})
+	}
+}
 
+func otlpTraceHandler(procEngine *engine.ProcessingEngine, logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tenantID := c.Request.Header.Get("X-Tenant-ID")
+		if tenantID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing tenant id"})
+			return
+		}
 		payload, err := io.ReadAll(c.Request.Body)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -89,175 +237,33 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "empty otlp payload"})
 			return
 		}
-
-		receiver := otlp.NewTraceReceiver(otlpSignalChan, tenantID)
-		if err := receiver.Accept(c.Request.Context(), payload); err != nil {
+		if err := otlp.HandleTracePayload(c.Request.Context(), procEngine, tenantID, payload); err != nil {
+			logger.Warn("otlp accept", zap.String("tenant", tenantID), zap.Error(err))
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 			return
 		}
-
 		c.JSON(http.StatusAccepted, gin.H{"status": "accepted"})
-	})
-
-	httpServer := &http.Server{
-		Addr:         getEnv("OBSERVE_X_HTTP_ADDR", ":4318"),
-		Handler:      r,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
-
-	// ── gRPC Server on :4317 ───────────────────────────────────────────
-	grpcAddr := getEnv("OBSERVE_X_GRPC_ADDR", ":4317")
-	grpcReceiver := receiver.NewGRPCReceiver(grpcAddr, processingEngine, keyStore, logger, serverTLSConfig)
-
-	// ── StatsD UDP Server on :8125 ─────────────────────────────────────
-	statsdAddr := getEnv("OBSERVE_X_STATSD_ADDR", ":8125")
-	defaultTenant := getEnv("OBSERVE_X_DEFAULT_TENANT", "default")
-	statsdReceiver := receiver.NewStatsDReceiver(statsdAddr, processingEngine, defaultTenant, logger)
-
-	// ── Start all servers concurrently ──────────────────────────────────
-	var wg sync.WaitGroup
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		logger.Info("HTTP server starting", zap.String("addr", httpServer.Addr))
-		if err := serveHTTP(httpServer, serverTLSConfig, logger); err != nil && err != http.ErrServerClosed {
-			logger.Fatal("HTTP server failed", zap.Error(err))
-		}
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := grpcReceiver.Start(ctx); err != nil {
-			logger.Error("gRPC receiver failed", zap.Error(err))
-		}
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := statsdReceiver.Start(ctx); err != nil {
-			logger.Error("StatsD receiver failed", zap.Error(err))
-		}
-	}()
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	logger.Info("shutting down servers...")
-	cancel()
-
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error("HTTP server forced shutdown", zap.Error(err))
-	}
-
-	grpcReceiver.Stop()
-	statsdReceiver.Stop()
-
-	wg.Wait()
-	logger.Info("all servers stopped")
-}
-
-func buildRouter(authMiddleware *auth.AuthMiddleware, processingEngine *engine.ProcessingEngine, ctx context.Context) *gin.Engine {
-	r := gin.New()
-	r.Use(gin.Recovery())
-
-	authorized := r.Group("/")
-	authorized.Use(func(c *gin.Context) {
-		authMiddleware.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			c.Request = r
-			c.Next()
-		})).ServeHTTP(c.Writer, c.Request)
-
-		if c.Writer.Written() {
-			c.Abort()
-			return
-		}
-	})
-
-	authorized.POST("/v1/ingest", ingestHandler(processingEngine, ctx))
-
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
-
-	return r
-}
-
-func ingestHandler(processingEngine *engine.ProcessingEngine, ctx context.Context) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var req struct {
-			TenantID string            `json:"tenant_id"`
-			Type     pkgsignal.Type    `json:"type"`
-			Payload  []byte            `json:"payload"`
-			Attrs    map[string]string `json:"attributes"`
-		}
-
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-
-		tenantID := c.Request.Header.Get("X-Tenant-ID")
-		if tenantID == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing tenant id"})
-			return
-		}
-		if req.TenantID != "" && req.TenantID != tenantID {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "tenant id mismatch between auth and request"})
-			return
-		}
-
-		sig := pkgsignal.Signal{
-			TenantID:   tenantID,
-			Type:       req.Type,
-			Payload:    req.Payload,
-			Attributes: req.Attrs,
-			ReceivedAt: time.Now(),
-		}
-
-		if err := processingEngine.ProcessSignal(ctx, sig); err != nil {
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": "system overloaded, try again later"})
-			return
-		}
-
-		c.JSON(http.StatusAccepted, gin.H{
-			"status":    "accepted",
-			"timestamp": time.Now().Unix(),
-		})
 	}
 }
 
-func serveHTTP(server *http.Server, tlsConfig *tls.Config, logger *zap.Logger) error {
+func serveHTTP(server *http.Server, tlsConfig *tls.Config) error {
 	if tlsConfig == nil {
-		logger.Info("HTTP server starting", zap.String("addr", server.Addr))
 		return server.ListenAndServe()
 	}
-
 	listener, err := net.Listen("tcp", server.Addr)
 	if err != nil {
 		return err
 	}
-
 	return server.Serve(tls.NewListener(listener, tlsConfig))
 }
 
 func loadServerTLSConfig() (*tls.Config, error) {
-	certFile := getEnv("OBSERVE_X_TLS_CERT_FILE", "")
-	keyFile := getEnv("OBSERVE_X_TLS_KEY_FILE", "")
-	caFile := getEnv("OBSERVE_X_TLS_CA_FILE", "")
-
+	certFile := os.Getenv("OBSERVE_X_TLS_CERT_FILE")
+	keyFile := os.Getenv("OBSERVE_X_TLS_KEY_FILE")
+	caFile := os.Getenv("OBSERVE_X_TLS_CA_FILE")
 	if certFile == "" && keyFile == "" && caFile == "" {
 		return nil, nil
 	}
-
 	cfg := &auth.TLSConfig{CertFile: certFile, KeyFile: keyFile, CAFile: caFile}
 	return cfg.LoadServerConfig()
 }
@@ -265,6 +271,24 @@ func loadServerTLSConfig() (*tls.Config, error) {
 func getEnv(key, fallback string) string {
 	if v, ok := os.LookupEnv(key); ok && v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envFloat(key string, fallback float64) float64 {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

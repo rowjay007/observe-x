@@ -1,12 +1,18 @@
+// Package actor implements the per-tenant TenantActor.
+//
+// Phase A scope: each TenantActor runs the per-tenant CEP rules and
+// exposes Stats for observability. Sampling lives one level up in the
+// engine (see ADR-0001). The actor is intentionally cheap so the
+// supervisor can keep tens of thousands alive concurrently.
 package actor
 
 import (
 	"context"
-	"github.com/rowjay007/observe-x/pkg/cep"
-	"github.com/rowjay007/observe-x/pkg/sampling"
-	"github.com/rowjay007/observe-x/pkg/signal"
 	"sync"
 	"time"
+
+	"github.com/rowjay007/observe-x/pkg/cep"
+	"github.com/rowjay007/observe-x/pkg/signal"
 )
 
 type Actor interface {
@@ -29,7 +35,6 @@ type TenantActor struct {
 	tenantID  string
 	inbox     chan signal.Signal
 	cepEngine *cep.Engine
-	sampler   *sampling.AdaptiveSampler
 
 	mu             sync.RWMutex
 	stopOnce       sync.Once
@@ -47,7 +52,6 @@ func NewTenantActor(tenantID string, bufferSize int) *TenantActor {
 		tenantID:  tenantID,
 		inbox:     make(chan signal.Signal, bufferSize),
 		cepEngine: cep.NewEngine(),
-		sampler:   sampling.NewAdaptiveSampler(0.1, 1000),
 	}
 }
 
@@ -127,12 +131,6 @@ func (a *TenantActor) processSignal(sig signal.Signal) {
 		a.mu.Lock()
 		a.lastEventType = event.Type
 		a.lastEventAt = event.Timestamp
-		a.mu.Unlock()
-	}
-
-	if a.sampler.Decide(sig) == sampling.Drop {
-		a.mu.Lock()
-		a.dropped++
 		a.mu.Unlock()
 	}
 }

@@ -1,0 +1,44 @@
+run:
+  timeout: 5m
+  go: '1.24'
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gosimple
+    - gosec
+    - gofmt
+    - goimports
+    - misspell
+    - revive
+
+linters-settings:
+  gosec:
+    excludes:
+      # G115: integer overflow conversion — we audit each manually.
+      - G115
+
+  revive:
+    rules:
+      - name: exported
+        arguments: ["checkPrivateReceivers"]
+      - name: var-naming
+      - name: package-comments
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck
+    # Generated code, embedded migrations, and protobuf folders are
+    # excluded from style nags.
+    - path: pkg/storage/clickhouse/migrations/
+      linters:
+        - all

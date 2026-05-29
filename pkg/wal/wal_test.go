@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestWALRotation(t *testing.T) {
@@ -169,6 +170,55 @@ func TestWALSyncOnClose(t *testing.T) {
 
 	if !found {
 		t.Error("Expected segment file with data after close")
+	}
+}
+
+func TestWALRecoverAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	w, err := NewWAL(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	payloads := [][]byte{
+		[]byte(`{"event":"alpha"}`),
+		[]byte(`{"event":"beta"}`),
+		[]byte(`{"event":"gamma"}`),
+	}
+	for _, p := range payloads {
+		if err := w.Write(p); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// Reopen: must NOT rotate — recovery resumes in the same segment.
+	w2, err := NewWAL(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer w2.Close()
+
+	if w2.segmentID != 1 {
+		t.Fatalf("expected to resume segment 1, got %d", w2.segmentID)
+	}
+
+	var got [][]byte
+	if err := w2.Walk(func(_ time.Time, p []byte) error {
+		got = append(got, p)
+		return nil
+	}); err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if len(got) != len(payloads) {
+		t.Fatalf("expected %d entries on replay, got %d", len(payloads), len(got))
+	}
+	for i, p := range payloads {
+		if string(got[i]) != string(p) {
+			t.Errorf("entry %d: want %q got %q", i, p, got[i])
+		}
 	}
 }
 

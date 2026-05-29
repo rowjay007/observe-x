@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/rowjay007/observe-x/pkg/engine"
-	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/auth"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"go.uber.org/zap"
+
+	"github.com/rowjay007/observe-x/pkg/engine"
+	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/auth"
 )
 
 func TestBuildRouterRequiresAuth(t *testing.T) {
@@ -25,7 +28,7 @@ func TestBuildRouterRequiresAuth(t *testing.T) {
 
 	secret := "test-secret"
 	authMiddleware := auth.NewAuthMiddleware(auth.NewStatelessKeyValidator(secret))
-	router := buildRouter(authMiddleware, processingEngine, ctx)
+	router := buildRouter(authMiddleware, processingEngine, zap.NewNop())
 
 	payload := map[string]interface{}{
 		"tenant_id":  "tenant-123",

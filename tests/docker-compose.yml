@@ -12,7 +12,9 @@ services:
       CLICKHOUSE_PASSWORD: ""
     volumes:
       - clickhouse_data:/var/lib/clickhouse
-      - ../infrastructure/clickhouse:/docker-entrypoint-initdb.d
+      # ObserveX schema is embedded in the binary (see
+      # pkg/storage/clickhouse/migrations) and applied at startup,
+      # so no init scripts need to be mounted here.
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
       interval: 10s
