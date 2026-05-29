@@ -10,8 +10,8 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/rowjay007/observe-x/pkg/auth"
 	"github.com/rowjay007/observe-x/pkg/engine"
-	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/auth"
 )
 
 func TestBuildRouterRequiresAuth(t *testing.T) {

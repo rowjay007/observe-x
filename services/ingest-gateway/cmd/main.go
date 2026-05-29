@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -16,11 +17,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/rowjay007/observe-x/pkg/auth"
 	"github.com/rowjay007/observe-x/pkg/engine"
 	"github.com/rowjay007/observe-x/pkg/observability"
 	pkgsignal "github.com/rowjay007/observe-x/pkg/signal"
 	chstorage "github.com/rowjay007/observe-x/pkg/storage/clickhouse"
-	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/auth"
 	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/otlp"
 	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/receiver"
 )
@@ -32,11 +33,6 @@ func main() {
 		panic("ingest-gateway: zap init failed: " + err.Error())
 	}
 	defer func() { _ = logger.Sync() }()
-
-	apiSecret, ok := os.LookupEnv("OBSERVE_X_API_SECRET")
-	if !ok || apiSecret == "" {
-		logger.Fatal("OBSERVE_X_API_SECRET is required")
-	}
 
 	walPath := getEnv("OBSERVE_X_WAL_PATH", "/tmp/observex/wal")
 
@@ -65,7 +61,11 @@ func main() {
 		logger.Fatal("engine start failed", zap.Error(err))
 	}
 
-	keyStore := auth.NewStatelessKeyValidator(apiSecret)
+	keyStore, keyStoreClose, err := initKeyStore(ctx, logger)
+	if err != nil {
+		logger.Fatal("key store init", zap.Error(err))
+	}
+	defer keyStoreClose()
 	authMW := auth.NewAuthMiddleware(keyStore)
 
 	serverTLS, err := loadServerTLSConfig()
@@ -291,4 +291,28 @@ func envInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+// initKeyStore selects the production PostgresKeyStore when
+// OBSERVE_X_POSTGRES_URL is set; otherwise it falls back to the
+// dev-only StatelessKeyValidator (with a loud warning). The returned
+// close func MUST be deferred by the caller.
+func initKeyStore(ctx context.Context, logger *zap.Logger) (auth.KeyStore, func(), error) {
+	if dsn := os.Getenv("OBSERVE_X_POSTGRES_URL"); dsn != "" {
+		store, err := auth.NewPostgresKeyStore(ctx, dsn, auth.PostgresOptions{})
+		if err != nil {
+			return nil, func() {}, err
+		}
+		logger.Info("auth: PostgresKeyStore active")
+		return store, func() { _ = store.Close() }, nil
+	}
+
+	apiSecret, ok := os.LookupEnv("OBSERVE_X_API_SECRET")
+	if !ok || apiSecret == "" {
+		return nil, func() {}, errors.New(
+			"either OBSERVE_X_POSTGRES_URL (production) or " +
+				"OBSERVE_X_API_SECRET (dev) MUST be set")
+	}
+	logger.Warn("auth: StatelessKeyValidator active (DEV ONLY); set OBSERVE_X_POSTGRES_URL for production")
+	return auth.NewStatelessKeyValidator(apiSecret), func() {}, nil
 }

@@ -98,9 +98,31 @@ func startIngestGateway(ctx context.Context, secret string) (*exec.Cmd, error) {
 		return nil, err
 	}
 	root := filepath.Join(wd, "..", "..")
-	cmd := exec.CommandContext(ctx, "go", "run", "./services/ingest-gateway/cmd")
+
+	// Pre-compile the binary to a temp file so the first /health probe
+	// doesn't race the `go build` step. Cold-cache compile is ~30s for
+	// the full dependency graph; subsequent runs reuse the build cache.
+	tmpDir, err := os.MkdirTemp("", "observex-e2e-")
+	if err != nil {
+		return nil, err
+	}
+	bin := filepath.Join(tmpDir, "ingest-gateway")
+	build := exec.CommandContext(ctx, "go", "build", "-o", bin, "./services/ingest-gateway/cmd")
+	build.Dir = root
+	build.Stdout = io.Discard
+	build.Stderr = io.Discard
+	if err := build.Run(); err != nil {
+		return nil, fmt.Errorf("build: %w", err)
+	}
+
+	walDir := filepath.Join(tmpDir, "wal")
+	cmd := exec.CommandContext(ctx, bin)
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "OBSERVE_X_API_SECRET="+secret, "GIN_MODE=release")
+	cmd.Env = append(os.Environ(),
+		"OBSERVE_X_API_SECRET="+secret,
+		"OBSERVE_X_WAL_PATH="+walDir,
+		"GIN_MODE=release",
+	)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 
@@ -109,28 +131,27 @@ func startIngestGateway(ctx context.Context, secret string) (*exec.Cmd, error) {
 	}
 
 	client := &http.Client{Timeout: 2 * time.Second}
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			_ = cmd.Process.Kill()
-			cmd.Wait()
+			_ = cmd.Wait()
 			return nil, ctx.Err()
 		default:
 		}
-
 		resp, err := client.Get(gatewayHealth)
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				return cmd, nil
 			}
 		}
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond)
 	}
 
 	_ = cmd.Process.Kill()
-	cmd.Wait()
+	_ = cmd.Wait()
 	return nil, fmt.Errorf("gateway did not become healthy")
 }
 
