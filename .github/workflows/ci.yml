@@ -63,10 +63,20 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     env:
       OBSERVE_X_CLICKHOUSE_ADDR: localhost:9000
       OBSERVE_X_CLICKHOUSE_DB: observex
       OBSERVE_X_POSTGRES_URL: postgres://observex:observex@localhost:5432/observex?sslmode=disable
+      OBSERVE_X_REDIS_URL: redis://localhost:6379/0
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -100,6 +110,10 @@ jobs:
         run: go build -trimpath -o bin/ingest-gateway ./services/ingest-gateway/cmd
       - name: Build tenant-api
         run: go build -trimpath -o bin/tenant-api ./services/tenant-api/cmd
+      - name: Build query-engine
+        run: go build -trimpath -o bin/query-engine ./services/query-engine/cmd
+      - name: Build ml-anomaly-detector
+        run: go build -trimpath -o bin/ml-anomaly-detector ./services/ml-anomaly-detector/cmd
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:

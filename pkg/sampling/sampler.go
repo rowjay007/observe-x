@@ -1,11 +1,27 @@
+// Package sampling decides which traces to keep for downstream
+// retention. Phase B-4 adds an EWMA-baseline z-score component to the
+// per-trace score so traces whose latency is anomalously high relative
+// to *that service's* recent baseline get prioritised, not just
+// traces over an arbitrary global threshold.
+//
+//	score = base                       (Phase A: severity + duration + service)
+//	      + 10 × latency_zscore        (Phase B-4: anomaly relative to baseline)
+//	      + 25 if parent_sampled       (Phase B-4: propagate upstream decision)
+//
+// Optionally, sampler state can be persisted to a StateStore (Redis
+// in production) every FlushInterval so a process restart doesn't
+// wipe the learned baselines. The hot path is always in-memory; the
+// store is a best-effort write-behind.
 package sampling
 
 import (
 	"container/heap"
-	"github.com/rowjay007/observe-x/pkg/signal"
+	"context"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/rowjay007/observe-x/pkg/signal"
 )
 
 type SampleDecision int
@@ -55,18 +71,108 @@ type AdaptiveSampler struct {
 	traceIndex   map[string]*TraceScore
 	samplingRate float64
 	maxSize      int
+
+	// Phase B-4 additions.
+	latency *ewmaTracker
+	state   StateStore
+	tenant  string
+
+	flushInterval time.Duration
+	stopCh        chan struct{}
+	doneCh        chan struct{}
 }
 
 func NewAdaptiveSampler(samplingRate float64, maxSize int) *AdaptiveSampler {
-	sampler := &AdaptiveSampler{
-		pq:           make(PriorityQueue, 0),
-		seenTraces:   make(map[string]time.Time),
-		traceIndex:   make(map[string]*TraceScore),
-		samplingRate: samplingRate,
-		maxSize:      maxSize,
+	return NewAdaptiveSamplerWithOptions(SamplerOptions{
+		SamplingRate: samplingRate,
+		MaxSize:      maxSize,
+	})
+}
+
+// SamplerOptions configures NewAdaptiveSamplerWithOptions. Zero values
+// are filled with safe defaults; only SamplingRate and MaxSize are
+// strictly required.
+type SamplerOptions struct {
+	SamplingRate float64
+	MaxSize      int
+	// EWMAAlpha controls how fast the latency baseline adapts.
+	// Default 0.05 (~20-sample half-life).
+	EWMAAlpha float64
+	// TenantID — opaque scope key for the StateStore. May be empty
+	// when the sampler isn't tenant-scoped.
+	TenantID string
+	// State — optional persistent state store. nil → in-memory only.
+	State StateStore
+	// FlushInterval — how often a snapshot of EWMA state is written
+	// to State. Default 30s.
+	FlushInterval time.Duration
+}
+
+func NewAdaptiveSamplerWithOptions(opts SamplerOptions) *AdaptiveSampler {
+	if opts.FlushInterval <= 0 {
+		opts.FlushInterval = 30 * time.Second
 	}
-	heap.Init(&sampler.pq)
-	return sampler
+	s := &AdaptiveSampler{
+		pq:            make(PriorityQueue, 0),
+		seenTraces:    make(map[string]time.Time),
+		traceIndex:    make(map[string]*TraceScore),
+		samplingRate:  opts.SamplingRate,
+		maxSize:       opts.MaxSize,
+		latency:       newEWMATracker(opts.EWMAAlpha),
+		state:         opts.State,
+		tenant:        opts.TenantID,
+		flushInterval: opts.FlushInterval,
+		stopCh:        make(chan struct{}),
+		doneCh:        make(chan struct{}),
+	}
+	heap.Init(&s.pq)
+	if s.state != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if loaded, err := s.state.Load(ctx, s.tenant); err == nil && len(loaded) > 0 {
+			s.latency.restore(loaded)
+		}
+		go s.flushLoop()
+	} else {
+		close(s.doneCh)
+	}
+	return s
+}
+
+// Close stops the background flusher and writes a final snapshot.
+// Safe to call on a sampler without a StateStore (no-op).
+func (s *AdaptiveSampler) Close() error {
+	if s.state == nil {
+		return nil
+	}
+	select {
+	case <-s.stopCh:
+		return nil
+	default:
+		close(s.stopCh)
+	}
+	<-s.doneCh
+	return nil
+}
+
+func (s *AdaptiveSampler) flushLoop() {
+	defer close(s.doneCh)
+	t := time.NewTicker(s.flushInterval)
+	defer t.Stop()
+	flush := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.state.Save(ctx, s.tenant, s.latency.snapshot())
+	}
+	for {
+		select {
+		case <-t.C:
+			flush()
+		case <-s.stopCh:
+			flush()
+			return
+		}
+	}
 }
 
 func (s PriorityQueue) Less(i, j int) bool {
@@ -77,22 +183,47 @@ func (s PriorityQueue) Less(i, j int) bool {
 }
 
 func (s *AdaptiveSampler) Score(sig signal.Signal) float64 {
+	if sig.Type != signal.Trace {
+		return 0
+	}
+
 	score := 0.0
 
-	if sig.Type == signal.Trace {
-		if severity, ok := sig.Attributes["severity"]; ok && severity == "ERROR" {
-			score += 100.0
-		}
+	if sig.Attributes["severity"] == "ERROR" {
+		score += 100.0
+	}
 
-		if duration, ok := sig.Attributes["duration_ms"]; ok {
-			if d, err := strconv.ParseFloat(duration, 64); err == nil && d > 1000 {
+	service := sig.Attributes["service.name"]
+	if service == "" {
+		service = sig.Attributes["service_name"]
+	}
+
+	if duration, ok := sig.Attributes["duration_ms"]; ok {
+		if d, err := strconv.ParseFloat(duration, 64); err == nil {
+			if d > 1000 {
 				score += 50.0
 			}
+			// Anomaly relative to this service's baseline. The Score
+			// method intentionally also feeds the tracker so the model
+			// adapts over time; this is correct because every signal
+			// we see is observed exactly once.
+			if service != "" {
+				z := s.latency.zscore(service, d)
+				if z > 0 {
+					score += 10.0 * z
+				}
+				s.latency.observe(service, d)
+			}
 		}
+	}
 
-		if sig.Attributes["service_name"] == "payment-service" {
-			score += 20.0
-		}
+	if sig.Attributes["service.name"] == "payment-service" ||
+		sig.Attributes["service_name"] == "payment-service" {
+		score += 20.0
+	}
+
+	if sig.Attributes["parent_sampled"] == "true" {
+		score += 25.0
 	}
 
 	return score

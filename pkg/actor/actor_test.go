@@ -12,7 +12,12 @@ func TestTenantActorProcessesSignalsAndTracksStats(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	actor := NewTenantActor("test-tenant", 10)
+	// Lower the threshold so a 6-error synthetic burst trips the
+	// rule under the Phase B-4 errors/sec semantics.
+	actor := NewTenantActorWithOptions("test-tenant", 10, Options{
+		ErrorRateThresholdEPS: 0.001, // ~1 error per 1000s; 6 trivially exceeds
+		Window:                5 * time.Minute,
+	})
 	if err := actor.Start(ctx); err != nil {
 		t.Fatalf("failed to start actor: %v", err)
 	}

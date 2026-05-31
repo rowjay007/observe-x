@@ -1,9 +1,9 @@
 # ObserveX: Distributed Observability & APM Platform — Production Roadmap
 
 **Project:** ObserveX v1.0  
-**Status:** Phase 1 — Ingest Foundation (Active)  
+**Status:** Phase A + Phase B complete — Phase C (production hardening) next  
 **Duration:** 18 Weeks (14–18 Weeks)  
-**Go Version:** 1.23+  
+**Go Version:** 1.25+  
 **Difficulty:** Mastery-Level
 
 ---
@@ -23,65 +23,57 @@ ObserveX is a **self-hosted, multi-tenant observability stack** that replaces co
 
 ## 📅 Phased Implementation Plan
 
-### Phase 1: Ingest Foundation (Weeks 1-3) 🏗️
+### Phase 1: Ingest Foundation (delivered as Phase A) 🏗️ ✅
 
-- [ ] **Project Initialization:** Go workspace, Proto definitions, and ADR-001 (Base Architecture).
-- [ ] **ingest-gateway:**
-  - OTLP gRPC/HTTP receivers.
-  - StatsD UDP listener.
-  - mTLS & API Key (BLAKE3) validation.
-- [ ] **Pipeline Core:** `StageFunc` implementation with back-pressure and load shedding.
-- [ ] **storage-engine (Core):**
-  - Custom WAL (mmap'd segments, CRC32).
-  - ClickHouse Strategy implementation.
-  - DDL Migrations.
-- [ ] **Validation:** Prove 12K events/sec ingest with <5ms P99 WAL commit.
+- [x] **Project Initialization:** Go workspace, ADR-0001 (Base Architecture).
+- [x] **ingest-gateway:** HTTP/gRPC/StatsD receivers, mTLS & API-key validation.
+- [x] **Pipeline Core:** `StageFunc` worker pool with back-pressure and load shedding.
+- [x] **storage-engine (Core):** mmap WAL with CRC32 + recovery + group commit; ClickHouse native v2 driver behind a circuit breaker; embedded DDL migrations.
+- [x] **Validation:** 1.5–2.2M signals/sec in benchmarks, far above the 12K/sec NFR.
 
-### Phase 2: Stream Processing & Multi-Tenancy (Weeks 4-7) 🎭
+### Phase 2 + 5 prereq: Multi-tenancy + observability (Phase B-1, B-4, B-5) 🎭 ✅
 
-- [ ] **stream-processor:**
-  - Actor Model implementation (TenantActor + Supervisor).
-  - CEP (Complex Event Processing) engine.
-  - Adaptive Sampler (Priority-Queue based).
-- [ ] **tenant-api:**
-  - PostgreSQL schema with RLS (Row-Level Security).
-  - GraphQL management API.
-- [ ] **WASM Plugin System:** `wasmtime-go` integration for tenant-specific logic.
+- [x] **tenant-api:** Postgres schema with **Row-Level Security**, embedded migrator, REST CRUD for tenants and API keys, append-only audit log, Argon2id key hashing.
+- [x] **stream-processor:** OTP-flavoured supervisor with exponential-backoff restart + quarantine; per-service sliding-window CEP with edge-triggered firing; EWMA-baseline adaptive sampler with optional Redis state persistence.
+- [x] **WASM Plugin System:** **wazero**-based host (pure Go, no CGo); JSON ABI; resource caps (memory + per-call deadline).
 
-### Phase 3: Query Engine & ObserveQL (Weeks 8-11) 🔍
+### Phase B-2: OTLP wire format ✅
 
-- [ ] **ObserveQL Grammar:** ANTLR4 definition and Go parser generation.
-- [ ] **query-engine:**
-  - Distributed Query Planner.
-  - Cost-Based Optimizer.
-  - Federated Execution (ClickHouse + S3).
-  - gRPC Result Streaming (Arrow format).
+- [x] Real **OTLP/HTTP** protobuf decoders for traces, metrics, logs at the standard `/v1/{traces,metrics,logs}` paths.
+- [x] Gzip transparent; 8 MiB body cap; spec-compliant response codes; resource attributes flattened into Signal attrs.
 
-### Phase 4: Intelligence & Alerting (Weeks 12-14) 🧠
+### Phase 3: Query Engine & ObserveQL (Phase B-3) 🔍 ✅
 
-- [ ] **ml-anomaly-detector:**
-  - ONNX Runtime integration (Isolation Forest + LSTM).
-  - Real-time EWMA scoring.
-- [ ] **alert-manager:**
-  - SLO burn-rate evaluation engine.
-  - Notification routing tree (PagerDuty, Slack).
+- [x] **ObserveQL Grammar:** Go-native PEG via **participle** (ANTLR4 deferred; see ADR-0007 for rationale).
+- [x] **query-engine:** HTTP service, allow-list-validated planner with mandatory tenant_id injection, ClickHouse executor, NDJSON streaming with header + trailer.
+- [ ] **Phase C deferrals:** Arrow IPC codec, cost-based optimiser for joins/CTEs, federated S3 + DuckDB execution.
 
-### Phase 5: UI & Production Hardening (Weeks 15-18) 🚀
+### Phase 4: Intelligence & Alerting (Phase B-5 + Phase C) 🧠 partial
 
-- [ ] **ui-server:** React + D3.js dashboard served via `embed.FS`.
-- [ ] **Cold Storage:** S3 Parquet + Delta Lake lifecycle management.
-- [ ] **K8s & GitOps:** Helm charts + ArgoCD configurations.
-- [ ] **Self-Observability:** ObserveX monitoring itself.
+- [x] **ml-anomaly-detector skeleton:** rolling z-score (EWMA mean + variance) per (tenant, metric); HTTP ingest at `/v1/observations`; Prometheus anomaly counter.
+- [ ] **alert-manager (Phase C):** SLO burn-rate engine, PagerDuty/Slack routing.
+- [ ] **Real ML (Phase C):** ONNX Runtime integration for Isolation Forest / LSTM.
+
+### Phase 5: UI & Production Hardening (Phase C) 🚀 pending
+
+- [ ] **ui-server:** React dashboard served via `embed.FS`.
+- [ ] **Cold Storage:** S3 + Parquet lifecycle for traces > 7d, metrics > 30d.
+- [ ] **K8s & GitOps:** Helm charts + ArgoCD apps for all six services.
+- [ ] **Self-Observability:** ObserveX scraping its own `/metrics` endpoints; OTLP exporter loopback for traces.
+- [ ] **Audit log export** to S3 with object-lock for SOC2.
+- [ ] **Operator OIDC** in front of tenant-api admin endpoints.
+- [ ] **Read/write scopes** on API keys.
 
 ---
 
 ## 🛠️ Tooling & Stack
 
-- **Languages:** Go 1.23, SQL, ANTLR4.
-- **Data Stores:** ClickHouse, PostgreSQL, Redis, S3 (Parquet).
-- **Communication:** gRPC, Apache Arrow, NATS JetStream.
-- **Observability:** OTLP, pprof, OpenTelemetry.
-- **DevOps:** Terraform, Kubernetes, Helm, k6.
+- **Languages:** Go 1.25, SQL, participle PEG (ObserveQL).
+- **Data Stores:** ClickHouse (hot), PostgreSQL (control plane), Redis (optional sampler state), S3 + Parquet (cold tier — Phase C).
+- **Communication:** gRPC (OTLP transport, Phase C), HTTP/JSON + NDJSON streams, NATS JetStream (Phase C).
+- **Observability:** OTLP/HTTP receivers, `/metrics` Prometheus endpoints on every service, pprof gated.
+- **Plugins:** wazero (pure-Go WASM runtime).
+- **DevOps:** Docker Compose (local), Helm + ArgoCD (Phase C), GitHub Actions (CI today).
 
 ---
 

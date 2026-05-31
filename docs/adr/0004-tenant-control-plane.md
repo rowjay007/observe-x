@@ -100,7 +100,7 @@ to S3 with object-lock (WORM) is a Phase C deliverable.
 
 ### Migration strategy
 
-A tiny in-package migrator (`services/tenant-api/internal/store/
+A tiny in-package migrator (`services/tenant-api/store/
 migrate.go`) reads embedded SQL files in lex order, runs each in a
 transaction, and records applied versions in `schema_migrations`.
 Append-only: never rewrite existing files. We avoided pulling in

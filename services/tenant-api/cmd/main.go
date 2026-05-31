@@ -25,7 +25,7 @@ import (
 
 	"github.com/rowjay007/observe-x/pkg/auth"
 	"github.com/rowjay007/observe-x/pkg/observability"
-	"github.com/rowjay007/observe-x/services/tenant-api/internal/store"
+	"github.com/rowjay007/observe-x/services/tenant-api/store"
 )
 
 func main() {

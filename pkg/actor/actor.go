@@ -35,6 +35,7 @@ type TenantActor struct {
 	tenantID  string
 	inbox     chan signal.Signal
 	cepEngine *cep.Engine
+	opts      Options
 
 	mu             sync.RWMutex
 	stopOnce       sync.Once
@@ -47,11 +48,39 @@ type TenantActor struct {
 	lastEventAt    time.Time
 }
 
+// Options tunes the CEP rule thresholds that the actor registers on
+// Start. Zero values fall back to production-safe defaults (see
+// withDefaults). Tests can supply tighter values for tiny synthetic
+// bursts; Phase C will surface per-tenant overrides via tenant-api.
+type Options struct {
+	ErrorRateThresholdEPS float64       // errors per second
+	LatencyThresholdMS    float64       // peak ms
+	Window                time.Duration // CEP sliding window
+}
+
+func (o Options) withDefaults() Options {
+	if o.ErrorRateThresholdEPS <= 0 {
+		o.ErrorRateThresholdEPS = 1.0
+	}
+	if o.LatencyThresholdMS <= 0 {
+		o.LatencyThresholdMS = 1000.0
+	}
+	if o.Window <= 0 {
+		o.Window = 5 * time.Minute
+	}
+	return o
+}
+
 func NewTenantActor(tenantID string, bufferSize int) *TenantActor {
+	return NewTenantActorWithOptions(tenantID, bufferSize, Options{})
+}
+
+func NewTenantActorWithOptions(tenantID string, bufferSize int, opts Options) *TenantActor {
 	return &TenantActor{
 		tenantID:  tenantID,
 		inbox:     make(chan signal.Signal, bufferSize),
 		cepEngine: cep.NewEngine(),
+		opts:      opts.withDefaults(),
 	}
 }
 
@@ -68,7 +97,11 @@ func (a *TenantActor) Start(ctx context.Context) error {
 	a.running = true
 	a.mu.Unlock()
 
-	a.cepEngine.AddRule(cep.NewHighErrorRateRule(a.tenantID, 5*time.Minute, 0.05))
+	// Phase B-4: thresholds are now errors/sec and ms (see ADR-0006).
+	// Per-tenant overrides land in Phase C; for now a global default
+	// or per-actor Options drive both rules.
+	a.cepEngine.AddRule(cep.NewHighErrorRateRule(a.tenantID, a.opts.Window, a.opts.ErrorRateThresholdEPS))
+	a.cepEngine.AddRule(cep.NewHighLatencyRule(a.tenantID, a.opts.Window, a.opts.LatencyThresholdMS))
 
 	go func() {
 		for {

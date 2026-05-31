@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -167,7 +166,14 @@ func buildRouter(authMW *auth.AuthMiddleware, procEngine *engine.ProcessingEngin
 	authorized := r.Group("/")
 	authorized.Use(ginAuth(authMW))
 	authorized.POST("/v1/ingest", ingestHandler(procEngine, logger))
-	authorized.POST("/v1/otlp/traces", otlpTraceHandler(procEngine, logger))
+
+	otlpHandler := otlp.NewHandler(procEngine)
+	authorized.POST("/v1/traces", gin.WrapF(otlpHandler.HandleTraces))
+	authorized.POST("/v1/metrics", gin.WrapF(otlpHandler.HandleMetrics))
+	authorized.POST("/v1/logs", gin.WrapF(otlpHandler.HandleLogs))
+
+	// Backward-compat alias for Phase A callers still hitting /v1/otlp/traces.
+	authorized.POST("/v1/otlp/traces", gin.WrapF(otlpHandler.HandleTraces))
 
 	return r
 }
@@ -215,31 +221,6 @@ func ingestHandler(procEngine *engine.ProcessingEngine, logger *zap.Logger) gin.
 		if err := procEngine.ProcessSignal(c.Request.Context(), sig); err != nil {
 			logger.Warn("backpressure", zap.String("tenant", tenantID), zap.Error(err))
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "overloaded, retry later"})
-			return
-		}
-		c.JSON(http.StatusAccepted, gin.H{"status": "accepted"})
-	}
-}
-
-func otlpTraceHandler(procEngine *engine.ProcessingEngine, logger *zap.Logger) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		tenantID := c.Request.Header.Get("X-Tenant-ID")
-		if tenantID == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing tenant id"})
-			return
-		}
-		payload, err := io.ReadAll(c.Request.Body)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		if len(payload) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "empty otlp payload"})
-			return
-		}
-		if err := otlp.HandleTracePayload(c.Request.Context(), procEngine, tenantID, payload); err != nil {
-			logger.Warn("otlp accept", zap.String("tenant", tenantID), zap.Error(err))
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 			return
 		}
 		c.JSON(http.StatusAccepted, gin.H{"status": "accepted"})

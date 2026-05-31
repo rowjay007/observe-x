@@ -4,15 +4,16 @@ Distributed observability and APM platform written in Go. Self-hosted,
 multi-tenant ingestion, processing, storage, and query engine for
 metrics, logs, traces, and profiling data.
 
-> **Status — Phase B-1 complete.** On top of the Phase A foundation
-> (durable WAL, real ClickHouse, single-source pipeline, Prometheus),
-> Phase B-1 adds the **tenant control plane**: a separate
-> `tenant-api` service, Postgres-backed per-tenant Argon2id-hashed
-> API keys with revocation and audit logging, Row-Level Security on
-> every tenant-owned table, and a 5s-TTL validation cache that keeps
-> the ingest hot path under 100µs. See [`docs/adr/`](./docs/adr) for
-> architecture decisions and [`roadmap.md`](./roadmap.md) for the
-> remaining work.
+> **Status — Phase B complete.** All five Phase B sub-phases have
+> landed. ObserveX now has real OTLP/HTTP receivers, a Postgres-
+> backed tenant control plane with RLS, an OTP-flavoured supervisor
+> with restart-strategy and quarantine, a sliding-window CEP engine,
+> an EWMA-baseline adaptive sampler with optional Redis state, an
+> ObserveQL parser + query engine that streams NDJSON results from
+> ClickHouse with tenant-id injection, a wazero-based WASM plugin
+> host, and a rolling-z-score anomaly-detector skeleton.
+> See [`docs/adr/`](./docs/adr) for the eight ADRs and
+> [`roadmap.md`](./roadmap.md) for the Phase C scope.
 
 ## Quick start
 
@@ -89,13 +90,43 @@ go run ./services/ingest-gateway/cmd
 
 ### Services and ports
 
-| Service            | Port | Endpoints                                                          |
-|--------------------|------|--------------------------------------------------------------------|
-| ingest-gateway HTTP| 4318 | `/v1/ingest`, `/v1/otlp/traces`, `/health`, `/ready`, `/metrics`   |
-| ingest-gateway gRPC| 4317 | OTLP-shaped `IngestService.Export`                                 |
-| ingest-gateway UDP | 8125 | StatsD                                                             |
-| tenant-api         | 7400 | `/v1/tenants`, `/v1/tenants/:id/api-keys`, `/health`, `/metrics`   |
-| pprof (gated)      | 4318 | `/debug/pprof/*` when `OBSERVE_X_PPROF_ENABLED=true`               |
+| Service              | Port | Endpoints                                                                                      |
+|----------------------|------|------------------------------------------------------------------------------------------------|
+| ingest-gateway HTTP  | 4318 | `/v1/ingest`, **`/v1/traces`**, **`/v1/metrics`**, **`/v1/logs`** (OTLP/protobuf, gzip optional), `/health`, `/ready`, `/metrics` |
+| ingest-gateway gRPC  | 4317 | OTLP-shaped `IngestService.Export`                                                             |
+| ingest-gateway UDP   | 8125 | StatsD                                                                                         |
+| tenant-api           | 7400 | `/v1/tenants`, `/v1/tenants/:id/api-keys`, `/health`, `/metrics`                               |
+| query-engine         | 7500 | `POST /v1/query` (ObserveQL, NDJSON results), `/health`, `/metrics`                            |
+| ml-anomaly-detector  | 7600 | `POST /v1/observations`, `/health`, `/metrics`                                                 |
+| pprof (gated)        | 4318 | `/debug/pprof/*` when `OBSERVE_X_PPROF_ENABLED=true`                                           |
+
+### Querying
+
+```bash
+ADMIN="Authorization: Bearer ${OBSERVE_X_TENANT_API_ADMIN_TOKEN}"
+KEY=$(curl -s -X POST http://localhost:7400/v1/tenants/acme/api-keys \
+  -H "$ADMIN" | jq -r .raw_key)
+
+curl -s -X POST http://localhost:7500/v1/query \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"SELECT severity, body FROM logs WHERE severity = \"ERROR\" SINCE 1h LIMIT 100"}'
+```
+
+Response shape (`application/x-ndjson`):
+
+```jsonl
+{"_kind":"header","source":"logs","columns":["severity","body"],"limit":100,"estimate":"scan: logs since 1h0m0s, limit 100"}
+{"severity":"ERROR","body":"timeout calling /pay"}
+{"severity":"ERROR","body":"db connection refused"}
+{"_kind":"trailer","rows_returned":2,"duration_ms":17}
+```
+
+### Sending real OpenTelemetry data
+
+Any OTel SDK pointed at `http://localhost:4318` with
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ${KEY}"` "just works"
+against `/v1/traces`, `/v1/metrics`, `/v1/logs`.
 
 ### Verify
 
@@ -108,19 +139,26 @@ go test -bench=BenchmarkEstimateThroughput -benchmem ./tests/benchmarks/
 ## Architecture
 
 ```
-services/ingest-gateway/       receivers (HTTP, gRPC, StatsD)
-services/tenant-api/           control-plane HTTP API + embedded migrations
-pkg/auth/                      KeyStore interface + Stateless/Memory/Postgres + TLS + middleware
-pkg/engine/                    ingest pipeline + worker pool
-pkg/wal/                       durable mmap WAL with group commit
-pkg/storage/clickhouse/        batched, circuit-broken CH backend
-pkg/actor/  pkg/supervisor/    per-tenant TenantActor + supervision
-pkg/sampling/                  adaptive head sampler
-pkg/cep/                       complex-event-processing rules
-pkg/observability/             Prometheus collectors + pprof handlers
-pkg/signal/                    canonical Signal type
-docs/adr/                      architecture decision records
-proto/                         protobuf source (OTLP stubs in Phase B-2)
+services/
+  ingest-gateway/              receivers (HTTP, gRPC, StatsD) + real OTLP/HTTP
+  tenant-api/                  control-plane HTTP API + embedded migrations
+  query-engine/                ObserveQL → ClickHouse, NDJSON streaming
+  ml-anomaly-detector/         rolling-z anomaly stream
+
+pkg/
+  auth/                        KeyStore (Postgres/Memory/Stateless) + Argon2id + mTLS + middleware
+  engine/                      ingest pipeline + worker pool
+  wal/                         durable mmap WAL with group commit
+  storage/clickhouse/          batched, circuit-broken CH backend + query
+  actor/  supervisor/          per-tenant TenantActor + OTP-flavoured restart + quarantine
+  sampling/                    EWMA-baseline adaptive sampler + optional Redis state
+  cep/                         sliding-window complex-event rules (HighErrorRate, HighLatency)
+  observeql/                   parser (participle) + planner (tenant-safe, allow-listed)
+  plugin/                      wazero WASM host + ABI primitives
+  observability/               Prometheus collectors + pprof handlers
+  signal/                      canonical Signal type
+
+docs/adr/                      ADRs 0001–0008
 tests/{integration,e2e,benchmarks}
 ```
 
@@ -193,13 +231,13 @@ Phase A series shipped:
 ## Roadmap snapshot
 
 - ✅ Phase A — stabilise foundation
-- 🟡 Phase B — staged across sub-phases:
-  - ✅ **B-1** — tenant control plane, PostgresKeyStore, RLS, audit log (this release)
-  - 🔜 **B-2** — real OTLP protobuf wire format (`/v1/{traces,metrics,logs}`)
-  - 🔜 **B-3** — query-engine + ObserveQL grammar + Arrow streaming
-  - 🔜 **B-4** — stream-processor v2 (supervisor restart, CEP windows, sampler EWMA + Redis state)
-  - 🔜 **B-5** — WASM plugin host (wazero) + anomaly-detector skeleton
-- 🔜 Phase C — alert manager, UI, Helm/ArgoCD, DR, security/compliance pass
+- ✅ Phase B — all five sub-phases shipped:
+  - ✅ **B-1** — tenant control plane, PostgresKeyStore, RLS, audit log
+  - ✅ **B-2** — real OTLP protobuf wire format (`/v1/{traces,metrics,logs}`, gzip)
+  - ✅ **B-3** — ObserveQL parser + planner + query-engine + NDJSON streaming
+  - ✅ **B-4** — stream-processor v2 (supervisor with quarantine, sliding-window CEP, EWMA sampler + optional Redis state)
+  - ✅ **B-5** — wazero WASM plugin host + rolling-z anomaly-detector skeleton
+- 🔜 Phase C — alert manager, UI, Helm/ArgoCD, DR, security/compliance pass, Arrow IPC results, federated S3 cold tier, ANTLR-driven ObserveQL extensions
 
 Full plan in [`roadmap.md`](./roadmap.md).
 
