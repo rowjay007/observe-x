@@ -116,6 +116,29 @@ jobs:
         run: go build -trimpath -o bin/ml-anomaly-detector ./services/ml-anomaly-detector/cmd
       - name: Build alert-manager
         run: go build -trimpath -o bin/alert-manager ./services/alert-manager/cmd
+      - name: Build cold-tier-controller (C-3b)
+        run: go build -trimpath -o bin/cold-tier ./services/cold-tier/cmd
+      - name: Build ui-server (C-4)
+        run: go build -trimpath -o bin/ui-server ./services/ui-server/cmd
+      - name: Smoke-test embedded UI assets
+        run: |
+          # The UI ships its SPA as go:embed assets; if the embed
+          # set drifts (assets/* removed, asset renamed, glob broken)
+          # the binary still compiles but the SPA returns 404. We
+          # boot the binary on a high port, scrape /, and assert the
+          # response is HTML containing the brand string. This is a
+          # 5-second guard against an entire class of "we shipped a
+          # blank operator console" regressions.
+          ./bin/ui-server &
+          UI_PID=$!
+          sleep 2
+          set -e
+          BODY="$(curl -sf http://localhost:8080/)"
+          echo "$BODY" | grep -q '<title>ObserveX</title>' || (echo "SPA index missing brand" && exit 1)
+          curl -sf http://localhost:8080/app.js  > /dev/null
+          curl -sf http://localhost:8080/app.css > /dev/null
+          curl -sf http://localhost:8080/healthz > /dev/null
+          kill $UI_PID
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -143,6 +166,27 @@ jobs:
             --set auditLog.s3.bucket=test-bucket \
             --set auditLog.s3.lock=COMPLIANCE \
             > /tmp/rendered-audit.yaml
+      - name: helm template (Phase C-3b + C-4 full)
+        run: |
+          # Renders the chart with every new value path enabled so a
+          # missing nindent or undefined value blows up here, not at
+          # the operator's `helm upgrade`.
+          helm template observex deploy/helm/observex \
+            --set uiServer.enabled=true \
+            --set uiServer.ingress.enabled=true \
+            --set uiServer.ingress.host=ui.example.com \
+            --set coldTier.enabled=true \
+            --set tenantApi.oidc.enabled=true \
+            --set tenantApi.oidc.issuer=https://login.example.com \
+            --set tenantApi.oidc.adminGroups='{sre,observex-admin}' \
+            --set uiServer.oidc.enabled=true \
+            --set uiServer.oidc.issuer=https://login.example.com \
+            > /tmp/rendered-full.yaml
+          grep -q "OBSERVE_X_OIDC_ISSUER" /tmp/rendered-full.yaml
+          grep -q "cold-tier" /tmp/rendered-full.yaml
+          grep -q "ui-server" /tmp/rendered-full.yaml
+          # Admin token MUST be absent when OIDC is enabled.
+          ! grep -q "OBSERVE_X_TENANT_API_ADMIN_TOKEN" /tmp/rendered-full.yaml
       - name: kubeval rendered manifests
         uses: instrumenta/kubeval-action@master
         continue-on-error: true

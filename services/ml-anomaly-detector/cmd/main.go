@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -26,9 +27,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.uber.org/zap"
 
+	"github.com/rowjay007/observe-x/pkg/mlruntime"
 	"github.com/rowjay007/observe-x/pkg/observability"
 	"github.com/rowjay007/observe-x/pkg/selfobs"
-	"github.com/rowjay007/observe-x/services/ml-anomaly-detector/internal/detector"
 )
 
 var (
@@ -55,19 +56,26 @@ func main() {
 		}()
 	}
 
-	d := detector.New(detector.Options{
-		WarmupSamples: envInt("OBSERVE_X_ANOMALY_WARMUP", 50),
-		ZThreshold:    envFloat("OBSERVE_X_ANOMALY_Z", 3.0),
-		Alpha:         envFloat("OBSERVE_X_ANOMALY_ALPHA", 0.05),
-	})
+	predictor, err := buildPredictor(context.Background(), logger)
+	if err != nil {
+		logger.Fatal("predictor init", zap.Error(err))
+	}
+	defer func() { _ = predictor.Close() }()
 
-	var totalObs atomic.Int64
+	var totalObs, totalAnoms, totalErrs atomic.Int64
+	predictor = mlruntime.WithCounters(predictor, &mlruntime.Counters{
+		Samples:       &totalObs,
+		Anomalies:     &totalAnoms,
+		PredictErrors: &totalErrs,
+	})
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
-	r.GET("/ready", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ready", "series": d.SeriesCount()}) })
+	r.GET("/ready", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ready", "predictor": predictor.Name()})
+	})
 	r.GET("/metrics", gin.WrapH(observability.MetricsHandler()))
 
 	r.POST("/v1/observations", func(c *gin.Context) {
@@ -92,18 +100,27 @@ func main() {
 			}
 		}
 		observations.Inc()
-		totalObs.Add(1)
-		if anom := d.Observe(req.TenantID, req.Metric, req.Value, at); anom != nil {
-			anomaliesFired.WithLabelValues(anom.TenantID).Inc()
+		decision, err := predictor.Observe(c.Request.Context(), mlruntime.Sample{
+			TenantID: req.TenantID, Metric: req.Metric,
+			Value: req.Value, At: at,
+		})
+		if err != nil {
+			logger.Warn("predict", zap.Error(err))
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "predict failed"})
+			return
+		}
+		if decision.Anomaly {
+			anomaliesFired.WithLabelValues(req.TenantID).Inc()
 			c.JSON(http.StatusOK, gin.H{
 				"anomaly": map[string]any{
-					"tenant_id": anom.TenantID,
-					"metric":    anom.Metric,
-					"value":     anom.Value,
-					"z":         anom.ZScore,
-					"mean":      anom.Mean,
-					"threshold": anom.Threshold,
-					"at":        anom.At.UTC().Format(time.RFC3339Nano),
+					"tenant_id": req.TenantID,
+					"metric":    req.Metric,
+					"value":     req.Value,
+					"score":     decision.Score,
+					"baseline":  decision.Baseline,
+					"threshold": decision.Threshold,
+					"predictor": predictor.Name(),
+					"at":        at.UTC().Format(time.RFC3339Nano),
 				},
 			})
 			return
@@ -132,7 +149,42 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
-	logger.Info("ml-anomaly-detector stopped", zap.Int64("total_observations", totalObs.Load()))
+	logger.Info("ml-anomaly-detector stopped",
+		zap.Int64("total_observations", totalObs.Load()),
+		zap.Int64("total_anomalies", totalAnoms.Load()),
+		zap.Int64("predict_errors", totalErrs.Load()))
+}
+
+// buildPredictor honours OBSERVE_X_ML_MODEL:
+//
+//	""       (default) → ZScorePredictor (the Phase B-5 detector)
+//	"zscore"            → same as default; explicit for clarity
+//	"onnx"              → OnnxPredictor; requires `-tags onnx` build
+//	                      and an operator-supplied .onnx file.
+//
+// Anything else is rejected at startup so a typo doesn't silently
+// downgrade an operator's intended config.
+func buildPredictor(ctx context.Context, logger *zap.Logger) (mlruntime.Predictor, error) {
+	model := os.Getenv("OBSERVE_X_ML_MODEL")
+	switch model {
+	case "", "zscore":
+		logger.Info("predictor: zscore-ewma")
+		return mlruntime.NewZScorePredictor(mlruntime.ZScoreOptions{
+			WarmupSamples: envInt("OBSERVE_X_ANOMALY_WARMUP", 50),
+			ZThreshold:    envFloat("OBSERVE_X_ANOMALY_Z", 3.0),
+			Alpha:         envFloat("OBSERVE_X_ANOMALY_ALPHA", 0.05),
+		}), nil
+	case "onnx":
+		path := os.Getenv("OBSERVE_X_ML_MODEL_PATH")
+		threshold := envFloat("OBSERVE_X_ML_SCORE_THRESHOLD", 0.5)
+		input := getEnv("OBSERVE_X_ML_INPUT_NAME", "float_input")
+		logger.Info("predictor: onnx", zap.String("model", path))
+		return mlruntime.NewOnnxPredictor(ctx, mlruntime.OnnxOptions{
+			ModelPath: path, InputName: input, ScoreThreshold: threshold,
+		})
+	default:
+		return nil, fmt.Errorf("unknown OBSERVE_X_ML_MODEL %q (expected '', 'zscore', or 'onnx')", model)
+	}
 }
 
 // ─── env helpers ─────────────────────────────────────────────────────────

@@ -35,6 +35,9 @@ import (
 //go:embed migrations/001_initial_schema.sql
 var initialSchemaSQL string
 
+//go:embed migrations/002_cold_tier.sql
+var coldTierMigrationSQL string
+
 // StorageBackend is the interface every storage strategy implements.
 // Phase A only ships ClickHouse; Phase C adds an S3 + Parquet cold-tier
 // implementation behind the same interface.
@@ -147,6 +150,14 @@ func NewBackend(opts Options) (*Backend, error) {
 		if err := client.RunMigrations(ctx, initialSchemaSQL); err != nil {
 			_ = client.Close()
 			return nil, fmt.Errorf("clickhouse: migrations failed: %w", err)
+		}
+		// Phase C-3b: cold-tier ALTERs. RunMigrations is tolerant of
+		// the "no such storage policy" failure for single-disk dev
+		// clusters; the migration takes effect when storage_policies.xml
+		// is mounted (see deploy/clickhouse/storage_policies.xml).
+		if err := client.RunMigrations(ctx, coldTierMigrationSQL); err != nil {
+			_ = client.Close()
+			return nil, fmt.Errorf("clickhouse: cold-tier migrations failed: %w", err)
 		}
 	}
 

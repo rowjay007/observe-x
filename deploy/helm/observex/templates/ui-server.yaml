@@ -1,0 +1,95 @@
+{{- if .Values.uiServer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "observex.fullname" . }}-ui-server
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ui-server
+spec:
+  replicas: {{ .Values.uiServer.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "observex.selectorLabels" (dict "ctx" . "component" "ui-server") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "observex.selectorLabels" (dict "ctx" . "component" "ui-server") | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ui-server
+          image: {{ include "observex.image" (dict "Values" .Values "component" "ui-server") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - { name: http, containerPort: 8080 }
+          env:
+            - name: OBSERVE_X_UI_ADDR
+              value: ":8080"
+            - name: OBSERVE_X_TENANT_API_URL
+              value: "http://{{ include "observex.fullname" . }}-tenant-api:7300"
+            - name: OBSERVE_X_QUERY_ENGINE_URL
+              value: "http://{{ include "observex.fullname" . }}-query-engine:7400"
+            - name: OBSERVE_X_ALERT_MANAGER_URL
+              value: "http://{{ include "observex.fullname" . }}-alert-manager:7700"
+            {{- if .Values.uiServer.oidc.enabled }}
+            - name: OBSERVE_X_OIDC_ISSUER
+              value: {{ .Values.uiServer.oidc.issuer | quote }}
+            - name: OBSERVE_X_OIDC_AUDIENCE
+              value: {{ .Values.uiServer.oidc.audience | quote }}
+            {{- with .Values.uiServer.oidc.adminGroups }}
+            - name: OBSERVE_X_OIDC_ADMIN_GROUPS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- include "observex.commonEnv" . | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+          resources:
+            {{- toYaml .Values.uiServer.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "observex.fullname" . }}-ui-server
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "observex.selectorLabels" (dict "ctx" . "component" "ui-server") | nindent 4 }}
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+{{- if .Values.uiServer.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "observex.fullname" . }}-ui-server
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+  {{- with .Values.uiServer.ingress.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.uiServer.ingress.ingressClassName }}
+  ingressClassName: {{ .Values.uiServer.ingress.ingressClassName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.uiServer.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "observex.fullname" . }}-ui-server
+                port: { name: http }
+  {{- with .Values.uiServer.ingress.tls }}
+  tls: {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

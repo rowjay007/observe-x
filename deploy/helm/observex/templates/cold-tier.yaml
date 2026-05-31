@@ -1,0 +1,71 @@
+{{- if .Values.coldTier.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "observex.fullname" . }}-cold-tier
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: cold-tier-controller
+spec:
+  # Singleton observer; HA isn't worth the duplicate Prom scrapes.
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels:
+      {{- include "observex.selectorLabels" (dict "ctx" . "component" "cold-tier") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "observex.selectorLabels" (dict "ctx" . "component" "cold-tier") | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: cold-tier
+          image: {{ include "observex.image" (dict "Values" .Values "component" "cold-tier") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - { name: http, containerPort: 7800 }
+          env:
+            - name: OBSERVE_X_CLICKHOUSE_ADDR
+              value: {{ .Values.clickhouse.addr | quote }}
+            - name: OBSERVE_X_CLICKHOUSE_DB
+              value: {{ .Values.clickhouse.database | quote }}
+            - name: OBSERVE_X_COLD_TIER_INTERVAL
+              value: {{ .Values.coldTier.scrapeInterval | quote }}
+            {{- include "observex.commonEnv" . | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+          resources:
+            {{- toYaml .Values.coldTier.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "observex.fullname" . }}-cold-tier
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "observex.selectorLabels" (dict "ctx" . "component" "cold-tier") | nindent 4 }}
+  ports:
+    - { name: http, port: 7800, targetPort: http }
+{{- if and .Values.coldTier.storagePolicyConfigMap.create .Values.coldTier.enabled }}
+---
+# Storage policy XML for ClickHouse. Operators MUST mount this on
+# the ClickHouse pod at /etc/clickhouse-server/config.d/ for the
+# cold-tier migration to take effect. See ADR-0015.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "observex.fullname" . }}-clickhouse-storage-policies
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+data:
+  storage_policies.xml: |
+{{ .Files.Get "files/storage_policies.xml" | indent 4 }}
+{{- end }}
+{{- end }}

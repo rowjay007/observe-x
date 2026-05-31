@@ -154,6 +154,50 @@ services:
     environment:
       OBSERVE_X_OTLP_ENDPOINT: http://ingest-gateway:7000
       OBSERVE_X_OTLP_INSECURE: "1"
+      # Default to the in-process z-score predictor; flip to onnx by
+      # rebuilding the image with `-tags onnx` (ADR-0016).
+      OBSERVE_X_ML_MODEL: zscore
+
+  # Cold-tier observer (ADR-0015). In compose we don't mount the
+  # storage_policies.xml since the in-tree ClickHouse instance uses
+  # only the default disk — the migration's `Cannot find storage
+  # policy` error is harmless and skipped. Useful here for the
+  # /metrics smoke test even without S3.
+  cold-tier-controller:
+    build:
+      context: ../..
+      dockerfile: build/docker/Dockerfile
+      args: { SERVICE: cold-tier }
+    ports: ["7800:7800"]
+    environment:
+      OBSERVE_X_CLICKHOUSE_ADDR: clickhouse:9000
+      OBSERVE_X_CLICKHOUSE_DB: observex
+      OBSERVE_X_OTLP_ENDPOINT: http://ingest-gateway:7000
+      OBSERVE_X_OTLP_INSECURE: "1"
+    depends_on:
+      clickhouse: { condition: service_healthy }
+
+  # Operator UI (ADR-0017). OIDC is disabled in compose because we
+  # don't ship a local IdP; a future PR can wire in dex/keycloak as
+  # an optional profile. Token-paste auth in the browser still
+  # works against the deployed upstreams.
+  ui-server:
+    build:
+      context: ../..
+      dockerfile: build/docker/Dockerfile
+      args: { SERVICE: ui-server }
+    ports: ["8080:8080"]
+    environment:
+      OBSERVE_X_UI_ADDR: ":8080"
+      OBSERVE_X_TENANT_API_URL: http://tenant-api:7300
+      OBSERVE_X_QUERY_ENGINE_URL: http://query-engine:7100
+      OBSERVE_X_ALERT_MANAGER_URL: http://alert-manager:7700
+      OBSERVE_X_OTLP_ENDPOINT: http://ingest-gateway:7000
+      OBSERVE_X_OTLP_INSECURE: "1"
+    depends_on:
+      tenant-api: { condition: service_started }
+      query-engine: { condition: service_started }
+      alert-manager: { condition: service_started }
 
 volumes:
   clickhouse_data:

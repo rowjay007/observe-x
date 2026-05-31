@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/rowjay007/observe-x/pkg/auditlog"
 	"github.com/rowjay007/observe-x/pkg/auth"
 	"github.com/rowjay007/observe-x/pkg/observability"
+	"github.com/rowjay007/observe-x/pkg/oidc"
 	"github.com/rowjay007/observe-x/pkg/selfobs"
 	"github.com/rowjay007/observe-x/services/tenant-api/store"
 )
@@ -44,7 +46,18 @@ func main() {
 	}
 
 	dsn := mustEnv(logger, "OBSERVE_X_POSTGRES_URL")
-	adminToken := mustEnv(logger, "OBSERVE_X_TENANT_API_ADMIN_TOKEN")
+	// Phase C-3b: OIDC is the production auth path; admin-token is
+	// the break-glass fallback. Exactly one of them MUST be set.
+	// If both are present, we fail closed to remove the dual-path
+	// attack surface.
+	issuer := os.Getenv("OBSERVE_X_OIDC_ISSUER")
+	adminToken := os.Getenv("OBSERVE_X_TENANT_API_ADMIN_TOKEN")
+	if issuer == "" && adminToken == "" {
+		logger.Fatal("either OBSERVE_X_OIDC_ISSUER or OBSERVE_X_TENANT_API_ADMIN_TOKEN must be set")
+	}
+	if issuer != "" && adminToken != "" {
+		logger.Fatal("OIDC and admin-token are mutually exclusive; unset OBSERVE_X_TENANT_API_ADMIN_TOKEN once OIDC is verified")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -69,9 +82,32 @@ func main() {
 		}
 	}()
 
+	var oidcVal *oidc.Validator
+	if issuer != "" {
+		audience := getEnv("OBSERVE_X_OIDC_AUDIENCE", "observex")
+		adminGroups := splitCSV(os.Getenv("OBSERVE_X_OIDC_ADMIN_GROUPS"))
+		groupClaim := getEnv("OBSERVE_X_OIDC_GROUP_CLAIM", "groups")
+		v, err := oidc.NewValidator(ctx, oidc.Config{
+			Issuer:      issuer,
+			Audience:    audience,
+			AdminGroups: adminGroups,
+			GroupClaim:  groupClaim,
+		})
+		if err != nil {
+			logger.Fatal("oidc validator init", zap.Error(err))
+		}
+		defer v.Close()
+		oidcVal = v
+		logger.Info("operator OIDC active",
+			zap.String("issuer", issuer),
+			zap.String("audience", audience),
+			zap.Strings("admin_groups", adminGroups))
+	}
+
 	srv := &server{
 		logger:     logger,
 		adminToken: adminToken,
+		oidc:       oidcVal,
 		repo:       repo,
 		keyStore:   keyStore,
 		auditExp:   auditExp,
@@ -108,6 +144,7 @@ func main() {
 type server struct {
 	logger     *zap.Logger
 	adminToken string
+	oidc       *oidc.Validator // nil when admin-token break-glass mode is active
 	repo       *store.Store
 	keyStore   *auth.PostgresKeyStore
 	auditExp   auditlog.Exporter
@@ -141,6 +178,12 @@ func (s *server) router() http.Handler {
 // ─── admin auth ──────────────────────────────────────────────────────────
 
 func (s *server) requireAdmin() gin.HandlerFunc {
+	// OIDC mode: validator's gin adapter handles the bearer; the
+	// stashed claims drive audit attribution downstream.
+	if s.oidc != nil {
+		return s.oidc.Gin()
+	}
+	// Break-glass: constant-time-compared static token.
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
 		const bearer = "Bearer "
@@ -317,6 +360,20 @@ func (s *server) revokeAPIKey(c *gin.Context) {
 // ─── helpers ─────────────────────────────────────────────────────────────
 
 func (s *server) audit(c *gin.Context, tenantID *string, actor, action string, details map[string]any) {
+	// Phase C-3b: when OIDC is active, the validated operator's
+	// subject (and email when present) override the static "admin"
+	// label so audit records carry the real principal.
+	if s.oidc != nil {
+		if sub := c.Request.Header.Get("X-Operator-Subject"); sub != "" {
+			actor = sub
+			if email := c.Request.Header.Get("X-Operator-Email"); email != "" {
+				if details == nil {
+					details = map[string]any{}
+				}
+				details["actor_email"] = email
+			}
+		}
+	}
 	srcIP := c.ClientIP()
 	ev := store.AuditEvent{
 		TenantID: tenantID,
@@ -433,6 +490,21 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// splitCSV splits a comma-separated env value into trimmed,
+// non-empty entries. Empty input ⇒ nil.
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	out := []string{}
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func orDefault(s, d string) string {

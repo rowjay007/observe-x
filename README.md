@@ -4,31 +4,28 @@ Distributed observability and APM platform written in Go. Self-hosted,
 multi-tenant ingestion, processing, storage, and query engine for
 metrics, logs, traces, and profiling data.
 
-> **Status — Phase C slices 1, 2, and 3a complete.** On top of Phase B,
-> ObserveX now ships:
-> - a real **alert-manager** service (SLO burn-rate per Google SRE
->   Workbook, Postgres-backed dedup + silences, Slack / PagerDuty /
->   Webhook notifiers behind `pkg/notifier`),
-> - **self-observability** through `pkg/selfobs` (OTel SDK loopback
->   into the ingest-gateway),
-> - a single multi-stage Dockerfile, a full
->   [`deploy/compose`](./deploy/compose) stack (Prometheus + Grafana
->   + every service), a real [`deploy/helm/observex`](./deploy/helm)
->   chart (`helm lint` clean, ServiceMonitors included), and
->   [`deploy/argocd`](./deploy/argocd) `AppProject` + `Application`
->   examples,
-> - **API key scopes** (`ingest`, `query`, `alert.read`,
->   `alert.write`, `tenant.admin`) enforced at every authenticated
->   route ([ADR-0011](./docs/adr/0011-api-key-scopes.md)),
-> - the **gRPC OTLP receiver** on `:4317` next to the HTTP one
->   ([ADR-0012](./docs/adr/0012-grpc-otlp-receiver.md)),
-> - **audit-log export** (`pkg/auditlog`) with a file backend for dev
->   and an S3 backend with Object-Lock COMPLIANCE-mode WORM for SOC2
->   ([ADR-0013](./docs/adr/0013-audit-log-export.md)).
+> **Status — v1.0 production-ready.** Phase A + Phase B + Phase C
+> (slices 1, 2, 3a, 3b, 4) are all complete. On top of every previous
+> milestone, this release adds:
 >
-> See [`docs/adr/`](./docs/adr) for the thirteen ADRs and
-> [`roadmap.md`](./roadmap.md) for what's deferred to Phase C-3b
-> (OIDC, S3 cold tier, real ML) and Phase C-4 (UI).
+> - **Operator OIDC** in front of every tenant-api admin endpoint
+>   (`pkg/oidc` — JWKS auto-refresh, group-allowlist RBAC, fails
+>   closed if both OIDC and the legacy admin token are configured
+>   — [ADR-0014](./docs/adr/0014-operator-oidc.md)),
+> - **S3 cold tier** for ClickHouse — multi-disk `hot_cold` storage
+>   policy + `TTL ... TO DISK 'cold_s3'` lifecycle, plus
+>   `services/cold-tier-controller` for per-disk Prometheus gauges
+>   ([ADR-0015](./docs/adr/0015-cold-tier.md)),
+> - a **pluggable ML runtime** (`pkg/mlruntime.Predictor`): z-score
+>   default + ONNX adapter behind `-tags onnx`
+>   ([ADR-0016](./docs/adr/0016-ml-runtime.md)),
+> - the **operator UI** at `services/ui-server` — a single Go binary
+>   that `embed.FS`-bundles a vanilla-JS SPA and reverse-proxies
+>   `/api/*` to tenant-api / query-engine / alert-manager with OIDC
+>   validation at the boundary ([ADR-0017](./docs/adr/0017-ui-server.md)).
+>
+> See [`docs/adr/`](./docs/adr) for the seventeen ADRs and
+> [`roadmap.md`](./roadmap.md) for the full milestone map.
 
 ## Quick start
 
@@ -117,6 +114,8 @@ go run ./services/ingest-gateway/cmd
 | query-engine         | 7500 | `POST /v1/query` (ObserveQL, NDJSON results), `/health`, `/metrics`                            |
 | ml-anomaly-detector  | 7600 | `POST /v1/observations`, `/health`, `/metrics`                                                 |
 | **alert-manager**    | 7700 | `POST /v1/events`, `POST /v1/observations` (SLO), `POST /v1/slos`, `POST /v1/silences`, `GET /v1/alerts`, `/health`, `/metrics` |
+| **cold-tier-controller** | 7800 | `/metrics` (`observex_clickhouse_parts{table,disk}`, `observex_clickhouse_bytes{table,disk}`) |
+| **ui-server**        | 8080 | `/` SPA, `/api/tenant/*`, `/api/query/*`, `/api/alert/*` reverse proxies, `/healthz`, `/metrics`, `/config` |
 | pprof (gated)        | 4318 | `/debug/pprof/*` when `OBSERVE_X_PPROF_ENABLED=true`                                           |
 
 ### Full stack via Docker Compose
@@ -144,6 +143,47 @@ managed Postgres / ClickHouse / Redis via the values in
 `deploy/helm/observex/values.yaml`. Secrets (Postgres DSN, admin
 tokens, Slack/PagerDuty keys) come from an existing
 `observex-config` `Secret` in the same namespace.
+
+### Operator console
+
+The Phase C-4 UI is served by `services/ui-server` at port 8080.
+After `docker compose up`, open http://localhost:8080 — three tabs
+(Tenants / ObserveQL / Alerts), authenticated via a bearer token
+the operator pastes (in dev mode any token works; production routes
+through the same OIDC validator as tenant-api). See
+[ADR-0017](./docs/adr/0017-ui-server.md).
+
+To enable OIDC end-to-end in Helm:
+
+```bash
+helm upgrade observex deploy/helm/observex \
+  --set tenantApi.oidc.enabled=true \
+  --set tenantApi.oidc.issuer=https://login.example.com \
+  --set tenantApi.oidc.audience=observex \
+  --set tenantApi.oidc.adminGroups='{sre,observex-admin}' \
+  --set uiServer.oidc.enabled=true \
+  --set uiServer.oidc.issuer=https://login.example.com
+```
+
+When `tenantApi.oidc.enabled=true`, the static admin-token Secret
+key is NOT consumed. tenant-api fails closed if both are set.
+
+### Cold tier (S3)
+
+Mount the canonical storage policy as a ClickHouse ConfigMap:
+
+```bash
+helm upgrade observex deploy/helm/observex \
+  --set coldTier.enabled=true \
+  --set coldTier.storagePolicyConfigMap.create=true
+# Then mount the resulting "observex-clickhouse-storage-policies"
+# ConfigMap at /etc/clickhouse-server/config.d/ on your CH pods.
+```
+
+The cold-tier-controller (`services/cold-tier/cmd`) reports
+per-table, per-disk part and byte counts as Prometheus gauges so
+operators can alarm on a stalled S3 lifecycle. See
+[ADR-0015](./docs/adr/0015-cold-tier.md).
 
 ### Querying
 

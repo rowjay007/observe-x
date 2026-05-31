@@ -26,9 +26,24 @@ spec:
           ports:
             - { name: http, containerPort: 7300 }
           env:
+            {{- if .Values.tenantApi.oidc.enabled }}
+            - name: OBSERVE_X_OIDC_ISSUER
+              value: {{ .Values.tenantApi.oidc.issuer | quote }}
+            - name: OBSERVE_X_OIDC_AUDIENCE
+              value: {{ .Values.tenantApi.oidc.audience | quote }}
+            {{- with .Values.tenantApi.oidc.adminGroups }}
+            - name: OBSERVE_X_OIDC_ADMIN_GROUPS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- if .Values.tenantApi.oidc.groupClaim }}
+            - name: OBSERVE_X_OIDC_GROUP_CLAIM
+              value: {{ .Values.tenantApi.oidc.groupClaim | quote }}
+            {{- end }}
+            {{- else }}
             - name: OBSERVE_X_TENANT_API_ADMIN_TOKEN
               valueFrom:
                 secretKeyRef: { name: {{ .Values.existingSecret }}, key: admin-token }
+            {{- end }}
             {{- include "observex.commonEnv" . | nindent 12 }}
           readinessProbe:
             httpGet: { path: /ready, port: http }

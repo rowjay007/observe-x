@@ -1,0 +1,60 @@
+<!--
+  ClickHouse storage policy for ObserveX hot/cold tiering (ADR-0015).
+
+  Mount this file into the ClickHouse server at
+    /etc/clickhouse-server/config.d/storage_policies.xml
+  (kube: a ConfigMap volume; docker-compose: a bind mount; bare metal:
+  copy in place and SYSTEM RELOAD CONFIG).
+
+  Two disks: `default` (local SSD/EBS) for hot data, `cold_s3` for
+  warm/cold data ageing out. The `hot_cold` policy keeps writes on the
+  default disk; the ALTER ... TTL ... TO DISK 'cold_s3' clauses in the
+  002 migration move parts asynchronously.
+
+  Credentials should NOT be inlined here in production — wire them via
+  environment with ClickHouse's `from_env` or the AWS SDK's default
+  credential chain.
+-->
+<clickhouse>
+    <storage_configuration>
+        <disks>
+            <cold_s3>
+                <type>s3</type>
+                <!-- s3://<bucket>/<prefix>/ -->
+                <endpoint>https://observex-cold.s3.amazonaws.com/clickhouse/</endpoint>
+                <!--
+                  In production, prefer IAM roles for SAs (IRSA / Pod
+                  Identity / Workload Identity) and DELETE these two
+                  lines. They're left here only as a documentation
+                  scaffold for environments without managed identity.
+                -->
+                <use_environment_credentials>true</use_environment_credentials>
+                <metadata_path>/var/lib/clickhouse/disks/cold_s3/</metadata_path>
+                <cache_enabled>true</cache_enabled>
+                <data_cache_max_size>10Gi</data_cache_max_size>
+                <skip_access_check>false</skip_access_check>
+            </cold_s3>
+        </disks>
+        <policies>
+            <hot_cold>
+                <volumes>
+                    <hot>
+                        <disk>default</disk>
+                        <!--
+                          When the hot volume is 85% full, ClickHouse
+                          will move the oldest parts to cold; matches
+                          the TTL pressure and avoids hot-disk
+                          exhaustion incidents.
+                        -->
+                        <max_data_part_size_bytes>5368709120</max_data_part_size_bytes>
+                    </hot>
+                    <cold>
+                        <disk>cold_s3</disk>
+                        <prefer_not_to_merge>true</prefer_not_to_merge>
+                    </cold>
+                </volumes>
+                <move_factor>0.15</move_factor>
+            </hot_cold>
+        </policies>
+    </storage_configuration>
+</clickhouse>

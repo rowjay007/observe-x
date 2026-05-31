@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ObserveX</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+  <nav class="topbar">
+    <div class="brand">
+      <span class="logo">●</span> ObserveX
+    </div>
+    <div class="tabs">
+      <button data-tab="tenants" class="tab active">Tenants</button>
+      <button data-tab="query" class="tab">Query</button>
+      <button data-tab="alerts" class="tab">Alerts</button>
+    </div>
+    <div class="who">
+      <span id="who-text">not authenticated</span>
+      <button id="auth-btn">Authenticate</button>
+    </div>
+  </nav>
+
+  <main>
+    <section id="panel-tenants" class="panel active">
+      <header>
+        <h1>Tenants</h1>
+        <button id="refresh-tenants">Refresh</button>
+      </header>
+      <table id="tenants-table" class="grid">
+        <thead><tr><th>ID</th><th>Display Name</th><th>Retention</th><th>Created</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="empty" id="tenants-empty">No tenants — POST /api/tenant/v1/tenants to create one.</p>
+    </section>
+
+    <section id="panel-query" class="panel">
+      <header><h1>ObserveQL</h1></header>
+      <div class="query-form">
+        <label>Tenant
+          <input id="query-tenant" placeholder="acme" />
+        </label>
+        <label class="grow">Query
+          <textarea id="query-text" rows="3"
+            placeholder='select count(*) from metrics where metric_name = "rps"'></textarea>
+        </label>
+        <button id="run-query">Run</button>
+      </div>
+      <pre id="query-result" class="result"></pre>
+    </section>
+
+    <section id="panel-alerts" class="panel">
+      <header>
+        <h1>Alerts</h1>
+        <button id="refresh-alerts">Refresh</button>
+      </header>
+      <table id="alerts-table" class="grid">
+        <thead><tr><th>State</th><th>Tenant</th><th>Rule</th><th>Fired</th><th>Notified</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="empty" id="alerts-empty">No active alerts.</p>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

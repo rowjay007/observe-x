@@ -110,16 +110,43 @@ func (c *Client) WriteBatch(ctx context.Context, signals []signal.Signal) error 
 
 // RunMigrations executes the embedded DDL one statement at a time. It is
 // idempotent (the schema uses CREATE TABLE IF NOT EXISTS).
+//
+// Statements that fail with ClickHouse error 243 (NO_AVAILABLE_DISK) are
+// SKIPPED rather than fatal: the Phase C-3b cold-tier migration sets a
+// storage policy that doesn't exist on single-disk dev clusters, and
+// degrading to "no cold tier" is the right behaviour there. On a
+// production cluster with `storage_policies.xml` mounted, the same
+// statement succeeds and the lifecycle takes effect.
 func (c *Client) RunMigrations(ctx context.Context, sqlText string) error {
 	for _, stmt := range splitSQLStatements(sqlText) {
 		if stmt == "" {
 			continue
 		}
 		if err := c.conn.Exec(ctx, stmt); err != nil {
+			if isMissingDiskErr(err) {
+				// Cold-tier disk not configured on this cluster; skip.
+				continue
+			}
 			return fmt.Errorf("clickhouse: exec migration: %w\n--- sql ---\n%s", err, stmt)
 		}
 	}
 	return nil
+}
+
+// isMissingDiskErr reports whether err looks like a ClickHouse 243
+// (NO_AVAILABLE_DISK) failure. The driver doesn't currently expose
+// a structured code for every error path, so we string-match on the
+// canonical fragments. This is the same compromise the rest of the
+// codebase makes for unique-constraint detection in pgx.
+func isMissingDiskErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "NO_AVAILABLE_DISK") ||
+		strings.Contains(msg, "Code: 243") ||
+		strings.Contains(msg, "is not in the list of disks") ||
+		strings.Contains(msg, "Cannot find storage policy")
 }
 
 // Query is a thin pass-through used by Phase B's query engine for

@@ -53,6 +53,16 @@ tenantApi:
   resources:
     requests: { cpu: "100m", memory: "256Mi" }
     limits:   { cpu: "500m", memory: "1Gi" }
+  # OIDC for operator auth — ADR-0014. When enabled, the static
+  # admin-token Secret key is NOT consumed; the validator gates
+  # every /v1 admin route. Leave disabled in dev to fall back to
+  # the break-glass token from `existingSecret.admin-token`.
+  oidc:
+    enabled: false
+    issuer: ""           # e.g. https://login.example.com
+    audience: observex
+    adminGroups: []      # ["observex-admin"]
+    groupClaim: ""       # default "groups"
 
 alertManager:
   enabled: true
@@ -67,6 +77,49 @@ mlAnomalyDetector:
   resources:
     requests: { cpu: "200m", memory: "512Mi" }
     limits:   { cpu: "1",    memory: "2Gi" }
+  # ML model selection — ADR-0016. "" or "zscore" uses the default
+  # in-process EWMA detector. "onnx" requires the operator to build
+  # the image with `-tags onnx` and mount the model file.
+  model: ""              # "", zscore, onnx
+  modelPath: ""          # /models/iforest.onnx (onnx mode)
+  modelInputName: ""     # default "float_input"
+  modelScoreThreshold: "" # default 0.5
+
+# UI server — ADR-0017. Single-binary operator console with an
+# embedded vanilla-JS SPA.
+uiServer:
+  enabled: true
+  replicaCount: 2
+  resources:
+    requests: { cpu: "50m",  memory: "64Mi" }
+    limits:   { cpu: "250m", memory: "256Mi" }
+  oidc:
+    enabled: false
+    issuer: ""
+    audience: observex
+    adminGroups: []
+  ingress:
+    enabled: false
+    ingressClassName: ""
+    host: observex.example.com
+    annotations: {}
+    tls: []
+
+# Cold-tier controller — ADR-0015. Scrapes system.parts and surfaces
+# per-(table, disk) gauges so operators can alarm on cold-tier moves
+# that have stalled.
+coldTier:
+  enabled: true
+  scrapeInterval: 60s
+  resources:
+    requests: { cpu: "20m",  memory: "32Mi" }
+    limits:   { cpu: "100m", memory: "128Mi" }
+  storagePolicyConfigMap:
+    # When true, ship the canonical storage_policies.xml as a
+    # ConfigMap so the operator can mount it on their ClickHouse
+    # pods. Set false if the operator already manages CH config
+    # via a separate chart.
+    create: true
 
 selfObservability:
   enabled: true

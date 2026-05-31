@@ -40,7 +40,7 @@ COPY --from=builder /out/${SERVICE} /app/server
 
 # Ports are documented per-service; expose all the well-knowns. The
 # runtime only binds to the ones a given service uses.
-EXPOSE 4318 5000 7000 7100 7200 7300 7700 9090
+EXPOSE 4317 4318 5000 7000 7100 7200 7300 7700 7800 8080 8125 9090
 
 USER nonroot:nonroot
 ENTRYPOINT ["/app/server"]
