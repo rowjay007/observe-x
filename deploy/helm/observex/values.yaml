@@ -73,3 +73,26 @@ selfObservability:
   endpoint: http://observex-ingest-gateway:7000
   samplingFraction: "0.10"
   insecure: "1"
+
+# Audit-log export — ADR-0013. Disabled by default; opt-in by setting
+# `backend: file | s3`. When s3 is selected, set `s3.bucket` and
+# (optionally) `s3.lock: COMPLIANCE` for WORM retention.
+auditLog:
+  backend: ""        # "", "file", "s3"
+  file:
+    path: /var/log/observex/audit.ndjson
+  s3:
+    bucket: ""
+    prefix: audit/
+    region: ""
+    endpoint: ""    # for MinIO / R2 / B2
+    insecure: ""    # set to any non-empty value to use http://
+    lock: ""        # "", GOVERNANCE, COMPLIANCE
+    retain: 8760h   # 1y by default when lock is set
+
+# Ports surfaced by the ingest gateway.
+ports:
+  httpIngest: 7000
+  grpcOtlp: 4317
+  statsd: 8125
+  metrics: 7001

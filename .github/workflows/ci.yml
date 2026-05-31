@@ -136,11 +136,30 @@ jobs:
         run: helm lint deploy/helm/observex
       - name: helm template (default values)
         run: helm template observex deploy/helm/observex > /tmp/rendered.yaml
+      - name: helm template (audit-log s3 + WORM)
+        run: |
+          helm template observex deploy/helm/observex \
+            --set auditLog.backend=s3 \
+            --set auditLog.s3.bucket=test-bucket \
+            --set auditLog.s3.lock=COMPLIANCE \
+            > /tmp/rendered-audit.yaml
       - name: kubeval rendered manifests
         uses: instrumenta/kubeval-action@master
         continue-on-error: true
         with:
           files: /tmp/rendered.yaml
+      - name: ArgoCD manifests structural check
+        run: |
+          # Lightweight schema check — fail fast on YAML syntax / kind
+          # mismatches before the operator deploys to a real cluster.
+          python3 -c "import yaml, sys, glob
+          for f in sorted(glob.glob('deploy/argocd/*.yaml')):
+              with open(f) as fh:
+                  for doc in yaml.safe_load_all(fh):
+                      assert doc is not None, f
+                      assert doc.get('apiVersion','').startswith('argoproj.io/'), f
+                      assert doc.get('kind') in ('Application','AppProject'), f
+                      print(f, '→', doc['kind'])"
 
   # Heavy throughput validation runs on demand via workflow_dispatch or
   # nightly schedule — not on every PR (k6 spins up Docker services and

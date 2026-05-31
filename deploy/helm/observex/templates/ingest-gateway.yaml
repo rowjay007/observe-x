@@ -28,7 +28,9 @@ spec:
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           ports:
             - { name: otlp-http, containerPort: 4318 }
+            - { name: otlp-grpc, containerPort: 4317 }
             - { name: http,      containerPort: 7000 }
+            - { name: statsd,    containerPort: 8125, protocol: UDP }
           env:
             - name: OBSERVE_X_WAL_PATH
               value: /var/lib/observex/wal
@@ -70,7 +72,9 @@ spec:
     {{- include "observex.selectorLabels" (dict "ctx" . "component" "ingest-gateway") | nindent 4 }}
   ports:
     - { name: otlp-http, port: 4318, targetPort: otlp-http }
+    - { name: otlp-grpc, port: 4317, targetPort: otlp-grpc }
     - { name: http,      port: 7000, targetPort: http }
+    - { name: statsd,    port: 8125, targetPort: statsd, protocol: UDP }
 {{- if .Values.ingestGateway.persistence.enabled }}
 ---
 apiVersion: v1

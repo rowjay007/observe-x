@@ -41,6 +41,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
+	"github.com/rowjay007/observe-x/pkg/auditlog"
 	"github.com/rowjay007/observe-x/pkg/auth"
 	"github.com/rowjay007/observe-x/pkg/notifier"
 	"github.com/rowjay007/observe-x/pkg/observability"
@@ -93,7 +94,16 @@ func main() {
 	defer keyStoreClose()
 	authMW := auth.NewAuthMiddleware(keyStore)
 
-	router := buildRouter(authMW, st, dispatcher, evaluator, logger)
+	auditExp, auditCloser := buildAuditExporter(ctx, logger)
+	defer func() {
+		shutdownCtx, c := context.WithTimeout(context.Background(), 10*time.Second)
+		defer c()
+		if err := auditCloser(shutdownCtx); err != nil {
+			logger.Warn("audit-log close", zap.Error(err))
+		}
+	}()
+
+	router := buildRouter(authMW, st, dispatcher, evaluator, auditExp, logger)
 
 	srv := &http.Server{
 		Addr:         getEnv("OBSERVE_X_ALERT_ADDR", ":7700"),
@@ -124,7 +134,7 @@ func main() {
 // ─── Router ──────────────────────────────────────────────────────────────
 
 func buildRouter(authMW *auth.AuthMiddleware, st *store.Store, dispatcher *notifier.Dispatcher,
-	evaluator *sloburn.Evaluator, logger *zap.Logger) http.Handler {
+	evaluator *sloburn.Evaluator, auditExp auditlog.Exporter, logger *zap.Logger) http.Handler {
 
 	if os.Getenv("GIN_MODE") == "" {
 		gin.SetMode(gin.ReleaseMode)
@@ -138,11 +148,18 @@ func buildRouter(authMW *auth.AuthMiddleware, st *store.Store, dispatcher *notif
 
 	authed := r.Group("/")
 	authed.Use(ginAuth(authMW))
-	authed.POST("/v1/events", eventsHandler(st, dispatcher, logger))
-	authed.POST("/v1/observations", observationsHandler(evaluator, st, dispatcher, logger))
-	authed.GET("/v1/alerts", listAlertsHandler(st))
-	authed.POST("/v1/silences", createSilenceHandler(st))
-	authed.POST("/v1/slos", registerSLOHandler(evaluator))
+	// Scope policy (see ADR-0011):
+	//   /v1/events         alert.write — anyone pushing an alert is
+	//                      effectively writing to the alerting plane
+	//   /v1/observations   alert.write — same reasoning (drives SLO state)
+	//   /v1/alerts         alert.read  — read-only listing
+	//   /v1/silences       alert.write — operators-suppress requires write
+	//   /v1/slos           tenant.admin — SLO definition is a control-plane mutation
+	authed.POST("/v1/events", auth.GinRequireScope(auth.ScopeAlertWrite), eventsHandler(st, dispatcher, logger))
+	authed.POST("/v1/observations", auth.GinRequireScope(auth.ScopeAlertWrite), observationsHandler(evaluator, st, dispatcher, logger))
+	authed.GET("/v1/alerts", auth.GinRequireScope(auth.ScopeAlertRead), listAlertsHandler(st))
+	authed.POST("/v1/silences", auth.GinRequireScope(auth.ScopeAlertWrite), createSilenceHandler(st, auditExp, logger))
+	authed.POST("/v1/slos", auth.GinRequireScope(auth.ScopeTenantAdmin), registerSLOHandler(evaluator, auditExp, logger))
 
 	return r
 }
@@ -332,7 +349,7 @@ func observationsHandler(eval *sloburn.Evaluator, st *store.Store,
 	}
 }
 
-func registerSLOHandler(eval *sloburn.Evaluator) gin.HandlerFunc {
+func registerSLOHandler(eval *sloburn.Evaluator, auditExp auditlog.Exporter, logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tenantID := c.Request.Header.Get("X-Tenant-ID")
 		if tenantID == "" {
@@ -356,6 +373,10 @@ func registerSLOHandler(eval *sloburn.Evaluator) gin.HandlerFunc {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		emitAudit(c, auditExp, logger, tenantID, "slo.register", map[string]any{
+			"name":   req.Name,
+			"target": req.Target,
+		})
 		c.JSON(http.StatusCreated, gin.H{"slo": req.Name})
 	}
 }
@@ -377,7 +398,7 @@ func listAlertsHandler(st *store.Store) gin.HandlerFunc {
 	}
 }
 
-func createSilenceHandler(st *store.Store) gin.HandlerFunc {
+func createSilenceHandler(st *store.Store, auditExp auditlog.Exporter, logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tenantID := c.Request.Header.Get("X-Tenant-ID")
 		if tenantID == "" {
@@ -396,15 +417,88 @@ func createSilenceHandler(st *store.Store) gin.HandlerFunc {
 		if req.DurationS <= 0 || req.DurationS > 7*24*3600 {
 			req.DurationS = 3600
 		}
+		expiresAt := time.Now().Add(time.Duration(req.DurationS) * time.Second)
 		id, err := st.CreateSilence(c.Request.Context(), store.Silence{
 			TenantID: tenantID, Matcher: req.Matcher, Reason: req.Reason,
-			ExpiresAt: time.Now().Add(time.Duration(req.DurationS) * time.Second),
+			ExpiresAt: expiresAt,
 		})
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		emitAudit(c, auditExp, logger, tenantID, "silence.create", map[string]any{
+			"id":         id,
+			"reason":     req.Reason,
+			"matcher":    req.Matcher,
+			"expires_at": expiresAt,
+		})
 		c.JSON(http.StatusCreated, gin.H{"id": id})
+	}
+}
+
+// emitAudit pushes a record through the configured exporter, never
+// blocking the request path on a hard failure.
+func emitAudit(c *gin.Context, exp auditlog.Exporter, logger *zap.Logger, tenantID, action string, details map[string]any) {
+	if exp == nil {
+		return
+	}
+	srcIP := c.ClientIP()
+	if err := exp.Append(c.Request.Context(), auditlog.Record{
+		TenantID:   tenantID,
+		Actor:      "tenant", // gated by tenant API key, not operator
+		Action:     action,
+		Details:    details,
+		SourceIP:   srcIP,
+		OccurredAt: time.Now().UTC(),
+	}); err != nil {
+		logger.Warn("audit-log export failed",
+			zap.Error(err), zap.String("action", action))
+	}
+}
+
+// buildAuditExporter mirrors the tenant-api helper — same env knobs
+// so a single deployment can configure both services identically.
+func buildAuditExporter(ctx context.Context, logger *zap.Logger) (auditlog.Exporter, func(context.Context) error) {
+	backend := os.Getenv("OBSERVE_X_AUDIT_LOG_BACKEND")
+	switch backend {
+	case "file":
+		path := getEnv("OBSERVE_X_AUDIT_LOG_FILE_PATH", "/var/log/observex/audit-alert-manager.ndjson")
+		fe, err := auditlog.NewFileExporter(path)
+		if err != nil {
+			logger.Warn("audit-log file exporter init failed; falling back to nop", zap.Error(err))
+			return auditlog.NopExporter{}, func(context.Context) error { return nil }
+		}
+		buf := auditlog.NewBufferedExporter(fe, 4096)
+		logger.Info("audit-log exporter active", zap.String("backend", "file"), zap.String("path", path))
+		return buf, buf.Close
+	case "s3":
+		bucket := os.Getenv("OBSERVE_X_AUDIT_LOG_S3_BUCKET")
+		if bucket == "" {
+			logger.Warn("audit-log s3 bucket missing; falling back to nop")
+			return auditlog.NopExporter{}, func(context.Context) error { return nil }
+		}
+		retain, _ := time.ParseDuration(os.Getenv("OBSERVE_X_AUDIT_LOG_S3_RETAIN"))
+		s3e, err := auditlog.NewS3Exporter(ctx, auditlog.S3Options{
+			Bucket:         bucket,
+			Prefix:         os.Getenv("OBSERVE_X_AUDIT_LOG_S3_PREFIX"),
+			Region:         os.Getenv("OBSERVE_X_AUDIT_LOG_S3_REGION"),
+			Endpoint:       os.Getenv("OBSERVE_X_AUDIT_LOG_S3_ENDPOINT"),
+			UseSSL:         os.Getenv("OBSERVE_X_AUDIT_LOG_S3_INSECURE") == "",
+			ObjectLockMode: os.Getenv("OBSERVE_X_AUDIT_LOG_S3_LOCK"),
+			RetainFor:      retain,
+		})
+		if err != nil {
+			logger.Warn("audit-log s3 exporter init failed; falling back to nop", zap.Error(err))
+			return auditlog.NopExporter{}, func(context.Context) error { return nil }
+		}
+		buf := auditlog.NewBufferedExporter(s3e, 4096)
+		logger.Info("audit-log exporter active",
+			zap.String("backend", "s3"),
+			zap.String("bucket", bucket),
+			zap.String("lock", os.Getenv("OBSERVE_X_AUDIT_LOG_S3_LOCK")))
+		return buf, buf.Close
+	default:
+		return auditlog.NopExporter{}, func(context.Context) error { return nil }
 	}
 }
 

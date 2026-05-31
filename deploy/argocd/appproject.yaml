@@ -1,0 +1,58 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: observex
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: ObserveX distributed observability platform
+  sourceRepos:
+    # Replace with your fork URL after forking; the in-repo path
+    # `deploy/helm/observex` is what the Application below points at.
+    - https://github.com/rowjay007/observe-x.git
+  destinations:
+    - name: in-cluster
+      server: https://kubernetes.default.svc
+      namespace: observex
+  # ClusterResourceWhitelist is intentionally empty: the chart should
+  # not be creating cluster-scoped resources. If you add a CRD in the
+  # chart (e.g. a Prometheus Operator ServiceMonitor CRD bundle),
+  # whitelist its group/kind here.
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: Secret
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ServiceAccount
+    - group: ""
+      kind: PersistentVolumeClaim
+    - group: apps
+      kind: Deployment
+    - group: apps
+      kind: StatefulSet
+    - group: batch
+      kind: Job
+    - group: networking.k8s.io
+      kind: Ingress
+    - group: monitoring.coreos.com
+      kind: ServiceMonitor
+  roles:
+    - name: read-only
+      description: View-only access for SRE / on-call dashboards
+      policies:
+        - p, proj:observex:read-only, applications, get, observex/*, allow
+        - p, proj:observex:read-only, applications, sync, observex/*, deny
+      groups:
+        # Bind to your IDP group; example here uses an org-team handle.
+        - observex:sre
+    - name: deployer
+      description: Sync + override permission for platform team
+      policies:
+        - p, proj:observex:deployer, applications, *, observex/*, allow
+      groups:
+        - observex:platform

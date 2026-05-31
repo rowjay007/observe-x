@@ -1,7 +1,7 @@
 # ObserveX: Distributed Observability & APM Platform — Production Roadmap
 
 **Project:** ObserveX v1.0  
-**Status:** Phase A + Phase B + Phase C (slices 1–2) complete — remaining Phase C work (UI, cold tier, ArgoCD, OIDC, scopes) next  
+**Status:** Phase A + Phase B + Phase C (slices 1–3a) complete — Phase C-3b (OIDC, S3 cold tier) + Phase C-4 (UI) next  
 **Duration:** 18 Weeks (14–18 Weeks)  
 **Go Version:** 1.25+  
 **Difficulty:** Mastery-Level
@@ -58,25 +58,28 @@ ObserveX is a **self-hosted, multi-tenant observability stack** that replaces co
 
 - [x] **Self-Observability (Phase C-2):** `pkg/selfobs` OTel SDK wrapper; every service emits traces back through the ingest-gateway OTLP loopback; default ParentBased(0.10) sampling. See ADR-0010.
 - [x] **Deploy story (Phase C-2):** single multi-stage `build/docker/Dockerfile`; full `deploy/compose/docker-compose.yml` (Prometheus + Grafana + every service); minimal-but-real Helm chart at `deploy/helm/observex/` with ServiceMonitors. `helm lint` clean.
-- [ ] **ui-server (Phase C-3):** React dashboard served via `embed.FS`.
-- [ ] **Cold Storage (Phase C-3):** S3 + Parquet lifecycle for traces > 7d, metrics > 30d.
-- [ ] **GitOps (Phase C-3):** ArgoCD `Application` examples on top of the Helm chart.
-- [ ] **Audit log export** to S3 with object-lock for SOC2.
-- [ ] **Operator OIDC** in front of tenant-api admin endpoints.
-- [ ] **Read/write scopes** on API keys.
-- [ ] **gRPC OTLP receiver** alongside the HTTP one.
+- [x] **API key scopes (Phase C-3a):** five canonical scopes (`ingest`, `query`, `alert.read`, `alert.write`, `tenant.admin`) enforced at every authenticated route via `auth.GinRequireScope`. tenant-api issuance accepts an explicit scope list. See ADR-0011.
+- [x] **gRPC OTLP receiver (Phase C-3a):** canonical `TraceService` / `MetricsService` / `LogsService` mounted on `:4317` alongside the legacy `IngestService`. Auth interceptor enforces the `ingest` scope. See ADR-0012.
+- [x] **Audit-log export (Phase C-3a):** `pkg/auditlog` with `FileExporter` (local NDJSON) and `S3Exporter` (object-lock COMPLIANCE WORM). tenant-api + alert-manager wire it via `buildAuditExporter`. See ADR-0013.
+- [x] **GitOps (Phase C-3a):** `deploy/argocd/{appproject,application}.yaml` examples ride on top of the Helm chart.
+- [ ] **Operator OIDC (Phase C-3b):** OIDC bearer-token validation in front of tenant-api admin endpoints (replaces the bootstrap admin token).
+- [ ] **Cold Storage (Phase C-3b):** S3 + Parquet lifecycle for traces > 7d, metrics > 30d.
+- [ ] **Real ML (Phase C-3b):** ONNX Runtime integration for Isolation Forest / LSTM.
+- [ ] **ui-server (Phase C-4):** React dashboard served via `embed.FS`.
 
 ---
 
 ## 🛠️ Tooling & Stack
 
 - **Languages:** Go 1.25, SQL, participle PEG (ObserveQL).
-- **Data Stores:** ClickHouse (hot), PostgreSQL (control plane + alert state), Redis (optional sampler state), S3 + Parquet (cold tier — Phase C-3).
-- **Communication:** HTTP/JSON + NDJSON streams; gRPC OTLP receiver (Phase C-3); NATS JetStream (Phase C-3).
+- **Data Stores:** ClickHouse (hot), PostgreSQL (control plane + alert state), Redis (optional sampler state), S3-compatible object store (audit-log WORM today via `pkg/auditlog`; Parquet cold tier in Phase C-3b).
+- **Communication:** HTTP/JSON + NDJSON streams; OTLP over HTTP and gRPC (`:4318` and `:4317`); NATS JetStream (Phase C-3b).
+- **Auth & Authz:** Argon2id-hashed bearer tokens with explicit per-key scopes (`ingest`, `query`, `alert.read`, `alert.write`, `tenant.admin`); operator OIDC for the control plane is Phase C-3b.
 - **Observability of itself:** OTLP/HTTP loopback via `pkg/selfobs` (W3C TraceContext + ParentBased sampling), `/metrics` Prometheus endpoints on every service, pprof gated, Grafana dashboard at `deploy/grafana/dashboards/observex-overview.json`.
 - **Plugins:** wazero (pure-Go WASM runtime).
 - **Alerting:** Slack / PagerDuty / Webhook notifiers behind the `pkg/notifier` interface; SLO burn-rate per Google SRE Workbook.
-- **DevOps:** `build/docker/Dockerfile` (distroless/static), Docker Compose for local, Helm chart at `deploy/helm/observex/` (lint clean), GitHub Actions CI with helm-lint + kubeval.
+- **Audit:** `pkg/auditlog` with file (NDJSON) and S3 backends; S3 Object-Lock COMPLIANCE mode for WORM retention.
+- **DevOps:** `build/docker/Dockerfile` (distroless/static), Docker Compose for local, Helm chart at `deploy/helm/observex/` (lint clean), ArgoCD `AppProject` + `Application` examples at `deploy/argocd/`, GitHub Actions CI with helm-lint + kubeval + ArgoCD schema check.
 
 ---
 

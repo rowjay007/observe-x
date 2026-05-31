@@ -4,19 +4,22 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"github.com/rowjay007/observe-x/pkg/auth"
-	"github.com/rowjay007/observe-x/pkg/engine"
-	"github.com/rowjay007/observe-x/pkg/signal"
+	"net"
+	"strings"
+	"sync"
+	"time"
+
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"net"
-	"strings"
-	"sync"
-	"time"
+
+	"github.com/rowjay007/observe-x/pkg/auth"
+	"github.com/rowjay007/observe-x/pkg/engine"
+	"github.com/rowjay007/observe-x/pkg/signal"
+	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/otlp"
 )
 
 // GRPCReceiver implements a gRPC server for OTLP signal ingestion.
@@ -66,11 +69,19 @@ func (r *GRPCReceiver) Start(ctx context.Context) error {
 
 	r.server = grpc.NewServer(serverOpts...)
 
-	// Register the ingest service handler
+	// Register the legacy ObserveX ingest service (Phase A).
 	RegisterIngestServiceServer(r.server, &ingestServiceHandler{
 		engine: r.engine,
 		logger: r.logger,
 	})
+
+	// Phase C-3a: register the three canonical OTLP/gRPC services
+	// (TraceService, MetricsService, LogsService) on the same port so
+	// real OTel SDKs that default to gRPC work out of the box.
+	// Auth and scope checks live in the unary interceptor above; the
+	// OTLP services themselves only need the validated tenant id and
+	// the engine.
+	otlp.RegisterGRPCServices(r.server, r.engine, r.keyStore)
 
 	r.running = true
 	r.mu.Unlock()
@@ -125,14 +136,33 @@ func (r *GRPCReceiver) authInterceptor(
 	}
 
 	key := authHeader[len(bearerScheme):]
-	tenantID, valid := r.keyStore.ValidateKey(key)
+
+	var keyMD auth.KeyMetadata
+	var valid bool
+	if sa, ok := r.keyStore.(auth.ScopeAwareKeyStore); ok {
+		keyMD, valid = sa.ValidateKeyWithMetadata(key)
+	} else {
+		if tid, ok := r.keyStore.ValidateKey(key); ok {
+			keyMD = auth.KeyMetadata{TenantID: tid, Scopes: auth.DefaultScopes()}
+			valid = true
+		}
+	}
 	if !valid {
 		return nil, status.Error(codes.PermissionDenied, "invalid api key")
 	}
+	// Phase C-3a: every gRPC ingest path requires the `ingest` scope.
+	if !auth.HasScope(keyMD.Scopes, auth.ScopeIngest) {
+		return nil, status.Errorf(codes.PermissionDenied,
+			"insufficient scope; required: %s", auth.ScopeIngest)
+	}
 
 	// Inject tenant ID into context metadata for downstream handlers
-	md.Set("x-tenant-id", tenantID)
+	// AND surface it via the otlp package's tenant ctx key so the
+	// OTLP services can pick it up without re-parsing metadata.
+	md.Set("x-tenant-id", keyMD.TenantID)
 	ctx = metadata.NewIncomingContext(ctx, md)
+	ctx = otlp.WithTenantForTest(ctx, keyMD.TenantID)
+	ctx = auth.WithScopes(ctx, keyMD.Scopes)
 
 	return handler(ctx, req)
 }

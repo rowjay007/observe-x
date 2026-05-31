@@ -66,8 +66,9 @@ func TestTenantAPIFullLifecycle(t *testing.T) {
 		t.Fatalf("unexpected tenant id %q", tn.ID)
 	}
 
-	// ── Issue API key ───────────────────────────────────────────────
-	issued, err := ks.IssueKey(ctx, tenantID, nil)
+	// ── Issue API key with explicit scopes ─────────────────────────
+	issued, err := ks.IssueKeyWithScopes(ctx, tenantID,
+		[]auth.Scope{auth.ScopeIngest, auth.ScopeQuery}, nil)
 	if err != nil {
 		t.Fatalf("issue key: %v", err)
 	}
@@ -76,6 +77,21 @@ func TestTenantAPIFullLifecycle(t *testing.T) {
 	}
 	if len(strings.Split(issued.Raw, ":")) != 3 {
 		t.Fatalf("issued key must be 3-part: %q", issued.Raw)
+	}
+	if !auth.HasScope(issued.Scopes, auth.ScopeIngest, auth.ScopeQuery) {
+		t.Fatalf("issued.Scopes lost expected scopes: %v", issued.Scopes)
+	}
+
+	// ── ValidateKeyWithMetadata: scopes round-trip ──────────────────
+	md, ok := ks.ValidateKeyWithMetadata(issued.Raw)
+	if !ok {
+		t.Fatal("metadata validate should succeed")
+	}
+	if !auth.HasScope(md.Scopes, auth.ScopeIngest, auth.ScopeQuery) {
+		t.Errorf("validated scopes lost: %v", md.Scopes)
+	}
+	if auth.HasScope(md.Scopes, auth.ScopeAlertWrite) {
+		t.Errorf("validated scopes leaked alert.write: %v", md.Scopes)
 	}
 
 	// ── Validate key (cache miss → Argon2id verify) ────────────────

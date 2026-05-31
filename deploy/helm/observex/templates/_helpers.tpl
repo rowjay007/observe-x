@@ -68,4 +68,38 @@ Common env block: self-observability + Postgres URL from secret.
 - name: OBSERVE_X_OTLP_INSECURE
   value: {{ .Values.selfObservability.insecure | quote }}
 {{- end }}
+{{- if .Values.auditLog }}
+{{- if .Values.auditLog.backend }}
+- name: OBSERVE_X_AUDIT_LOG_BACKEND
+  value: {{ .Values.auditLog.backend | quote }}
+{{- if eq .Values.auditLog.backend "file" }}
+- name: OBSERVE_X_AUDIT_LOG_FILE_PATH
+  value: {{ .Values.auditLog.file.path | quote }}
+{{- end }}
+{{- if eq .Values.auditLog.backend "s3" }}
+- name: OBSERVE_X_AUDIT_LOG_S3_BUCKET
+  value: {{ .Values.auditLog.s3.bucket | quote }}
+- name: OBSERVE_X_AUDIT_LOG_S3_PREFIX
+  value: {{ .Values.auditLog.s3.prefix | quote }}
+{{- if .Values.auditLog.s3.region }}
+- name: OBSERVE_X_AUDIT_LOG_S3_REGION
+  value: {{ .Values.auditLog.s3.region | quote }}
+{{- end }}
+{{- if .Values.auditLog.s3.endpoint }}
+- name: OBSERVE_X_AUDIT_LOG_S3_ENDPOINT
+  value: {{ .Values.auditLog.s3.endpoint | quote }}
+{{- end }}
+{{- if .Values.auditLog.s3.insecure }}
+- name: OBSERVE_X_AUDIT_LOG_S3_INSECURE
+  value: {{ .Values.auditLog.s3.insecure | quote }}
+{{- end }}
+{{- if .Values.auditLog.s3.lock }}
+- name: OBSERVE_X_AUDIT_LOG_S3_LOCK
+  value: {{ .Values.auditLog.s3.lock | quote }}
+- name: OBSERVE_X_AUDIT_LOG_S3_RETAIN
+  value: {{ .Values.auditLog.s3.retain | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end -}}

@@ -1,0 +1,61 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: observex
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: observex
+  source:
+    # Replace with your fork URL.
+    repoURL: https://github.com/rowjay007/observe-x.git
+    # Pin to a tag or commit SHA in production. HEAD is fine for
+    # dev / preview environments.
+    targetRevision: HEAD
+    path: deploy/helm/observex
+    helm:
+      # Inline overrides. Anything you want to manage as code goes
+      # here; anything you want to manage as ops state (image tags,
+      # replica counts, SLOs) should be in a Helm values file under
+      # `values.yaml` next to this Application.
+      values: |
+        global:
+          image:
+            registry: ghcr.io/rowjay007
+            tag: "1.0.0"
+            pullPolicy: IfNotPresent
+          # The chart will mount these env vars from
+          # `secretName` defined here. The secret itself MUST be
+          # created out of band (see deploy/argocd/README.md).
+          existingSecret: observex-secrets
+        serviceMonitor:
+          enabled: true
+        selfObservability:
+          enabled: true
+          endpoint: ingest-gateway.observex.svc.cluster.local:4318
+          insecure: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observex
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        maxDuration: 3m0s
+        factor: 2
+  ignoreDifferences:
+    # The PVC for ingest-gateway WAL grows over time; ignore
+    # `status.capacity` drift so Argo doesn't try to revert it.
+    - group: ""
+      kind: PersistentVolumeClaim
+      jsonPointers:
+        - /status

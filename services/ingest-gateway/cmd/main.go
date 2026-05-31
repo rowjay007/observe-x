@@ -196,15 +196,19 @@ func buildRouter(authMW *auth.AuthMiddleware, procEngine *engine.ProcessingEngin
 
 	authorized := r.Group("/")
 	authorized.Use(ginAuth(authMW))
-	authorized.POST("/v1/ingest", ingestHandler(procEngine, logger))
+	// Phase C-3a: every ingest endpoint requires the `ingest` scope.
+	// This is the default scope on tenant-api-issued keys; we enforce
+	// explicitly so a query-only key cannot also write.
+	requireIngest := auth.GinRequireScope(auth.ScopeIngest)
+	authorized.POST("/v1/ingest", requireIngest, ingestHandler(procEngine, logger))
 
 	otlpHandler := otlp.NewHandler(procEngine)
-	authorized.POST("/v1/traces", gin.WrapF(otlpHandler.HandleTraces))
-	authorized.POST("/v1/metrics", gin.WrapF(otlpHandler.HandleMetrics))
-	authorized.POST("/v1/logs", gin.WrapF(otlpHandler.HandleLogs))
+	authorized.POST("/v1/traces", requireIngest, gin.WrapF(otlpHandler.HandleTraces))
+	authorized.POST("/v1/metrics", requireIngest, gin.WrapF(otlpHandler.HandleMetrics))
+	authorized.POST("/v1/logs", requireIngest, gin.WrapF(otlpHandler.HandleLogs))
 
 	// Backward-compat alias for Phase A callers still hitting /v1/otlp/traces.
-	authorized.POST("/v1/otlp/traces", gin.WrapF(otlpHandler.HandleTraces))
+	authorized.POST("/v1/otlp/traces", requireIngest, gin.WrapF(otlpHandler.HandleTraces))
 
 	return r
 }

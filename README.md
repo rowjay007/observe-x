@@ -4,19 +4,31 @@ Distributed observability and APM platform written in Go. Self-hosted,
 multi-tenant ingestion, processing, storage, and query engine for
 metrics, logs, traces, and profiling data.
 
-> **Status — Phase C slices 1 and 2 complete.** On top of Phase B,
-> ObserveX now ships a real **alert-manager service** (SLO burn-rate
-> per Google SRE Workbook, Postgres-backed dedup + silences,
-> Slack/PagerDuty/Webhook notifiers behind `pkg/notifier`), CEP →
-> alert-manager wire via `pkg/alertsink`, **self-observability**
-> through `pkg/selfobs` (OTel SDK loopback into the ingest-gateway),
-> a single multi-stage Dockerfile, a full
-> [`deploy/compose`](./deploy/compose) stack (Prometheus + Grafana +
-> every service), and a real [`deploy/helm/observex`](./deploy/helm)
-> chart (`helm lint` clean, ServiceMonitors included).
-> See [`docs/adr/`](./docs/adr) for the ten ADRs and
-> [`roadmap.md`](./roadmap.md) for the remaining Phase C scope (UI,
-> S3 cold tier, ArgoCD, OIDC, key scopes, gRPC OTLP).
+> **Status — Phase C slices 1, 2, and 3a complete.** On top of Phase B,
+> ObserveX now ships:
+> - a real **alert-manager** service (SLO burn-rate per Google SRE
+>   Workbook, Postgres-backed dedup + silences, Slack / PagerDuty /
+>   Webhook notifiers behind `pkg/notifier`),
+> - **self-observability** through `pkg/selfobs` (OTel SDK loopback
+>   into the ingest-gateway),
+> - a single multi-stage Dockerfile, a full
+>   [`deploy/compose`](./deploy/compose) stack (Prometheus + Grafana
+>   + every service), a real [`deploy/helm/observex`](./deploy/helm)
+>   chart (`helm lint` clean, ServiceMonitors included), and
+>   [`deploy/argocd`](./deploy/argocd) `AppProject` + `Application`
+>   examples,
+> - **API key scopes** (`ingest`, `query`, `alert.read`,
+>   `alert.write`, `tenant.admin`) enforced at every authenticated
+>   route ([ADR-0011](./docs/adr/0011-api-key-scopes.md)),
+> - the **gRPC OTLP receiver** on `:4317` next to the HTTP one
+>   ([ADR-0012](./docs/adr/0012-grpc-otlp-receiver.md)),
+> - **audit-log export** (`pkg/auditlog`) with a file backend for dev
+>   and an S3 backend with Object-Lock COMPLIANCE-mode WORM for SOC2
+>   ([ADR-0013](./docs/adr/0013-audit-log-export.md)).
+>
+> See [`docs/adr/`](./docs/adr) for the thirteen ADRs and
+> [`roadmap.md`](./roadmap.md) for what's deferred to Phase C-3b
+> (OIDC, S3 cold tier, real ML) and Phase C-4 (UI).
 
 ## Quick start
 
@@ -56,8 +68,11 @@ curl -s -X POST http://localhost:7400/v1/tenants \
   -d '{"id":"acme","display_name":"Acme Corp","tier":"pro"}'
 
 # issue an API key — the response shows the raw key ONCE.
+# Phase C-3a: pass `scopes` to bake a least-privilege key. Omit it
+# for the default (`["ingest"]`).
 KEY=$(curl -s -X POST http://localhost:7400/v1/tenants/acme/api-keys \
-  -H "$ADMIN" | jq -r .raw_key)
+  -H "$ADMIN" -H 'Content-Type: application/json' \
+  -d '{"scopes":["ingest","query"]}' | jq -r .raw_key)
 
 # ingest with the new key
 curl -X POST http://localhost:4318/v1/ingest \

@@ -49,6 +49,7 @@ type IssuedKey struct {
 	KID       string
 	Raw       string    // tenant:kid:secret — show once, then discard
 	Prefix    string    // first 8 chars of the raw key (for human ID)
+	Scopes    []Scope   // canonical scope set baked into the key
 	CreatedAt time.Time
 	ExpiresAt *time.Time
 }
@@ -161,57 +162,79 @@ func (s *PostgresKeyStore) Pool() *pgxpool.Pool {
 // ─── ValidateKey (hot path) ───────────────────────────────────────────────
 
 func (s *PostgresKeyStore) ValidateKey(key string) (string, bool) {
-	tenantID, kid, secret, ok := splitWireKey(key)
+	md, ok := s.ValidateKeyWithMetadata(key)
 	if !ok {
 		return "", false
 	}
+	return md.TenantID, true
+}
 
-	// Cache hit: BLAKE3 the full wire key and look up; constant-time
-	// compare the returned tenantID.
-	digest := Blake3Sum(key)
-	if cached, found := s.cache.get(digest); found {
-		if subtle.ConstantTimeCompare([]byte(cached), []byte(tenantID)) != 1 {
-			return "", false
-		}
-		s.scheduleLastUsed(kid)
-		return cached, true
+// ValidateKeyWithMetadata is the scope-aware path. It returns the
+// full KeyMetadata (tenant + scopes) on success. Cached entries carry
+// the scope set so we don't pay the SELECT cost on every request.
+func (s *PostgresKeyStore) ValidateKeyWithMetadata(key string) (KeyMetadata, bool) {
+	tenantID, kid, secret, ok := splitWireKey(key)
+	if !ok {
+		return KeyMetadata{}, false
 	}
 
-	// Miss: single-row lookup, then Argon2id verify.
+	digest := Blake3Sum(key)
+	if cached, found := s.cache.get(digest); found {
+		if subtle.ConstantTimeCompare([]byte(cached.tenantID), []byte(tenantID)) != 1 {
+			return KeyMetadata{}, false
+		}
+		s.scheduleLastUsed(kid)
+		return KeyMetadata{TenantID: cached.tenantID, Scopes: cached.scopes}, true
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	var hash string
+	var rawScopes []string
 	row := s.pool.QueryRow(ctx, `
-		SELECT hash
+		SELECT hash, scopes
 		FROM   tenant_api_keys
 		WHERE  tenant_id  = $1
 		  AND  kid        = $2
 		  AND  revoked_at IS NULL
 		  AND  (expires_at IS NULL OR expires_at > now())
 	`, tenantID, kid)
-	if err := row.Scan(&hash); err != nil {
-		return "", false
+	if err := row.Scan(&hash, &rawScopes); err != nil {
+		return KeyMetadata{}, false
 	}
 
 	if !verifyArgon2id(secret, hash) {
-		return "", false
+		return KeyMetadata{}, false
 	}
-	s.cache.put(digest, tenantID)
+	scopes, _ := ParseScopes(rawScopes) // unknown rows ignored ⇒ DefaultScopes()
+	s.cache.put(digest, tenantID, scopes)
 	s.scheduleLastUsed(kid)
-	return tenantID, true
+	return KeyMetadata{TenantID: tenantID, Scopes: scopes}, true
 }
 
 // ─── IssueKey / RevokeKey (control plane) ─────────────────────────────────
 
-// IssueKey generates a new random secret, stores its Argon2id hash, and
-// returns the raw wire key (which the caller MUST surface to the user
-// exactly once). The actor argument is recorded in tenant_audit_log
-// by the tenant-api service, not here.
+// IssueKey is the legacy entrypoint kept for backwards compatibility;
+// new callers should prefer IssueKeyWithScopes. It defaults to
+// DefaultScopes() (ingest-only).
 func (s *PostgresKeyStore) IssueKey(ctx context.Context, tenantID string, expiresAt *time.Time) (IssuedKey, error) {
+	return s.IssueKeyWithScopes(ctx, tenantID, DefaultScopes(), expiresAt)
+}
+
+// IssueKeyWithScopes generates a new random secret, stores its
+// Argon2id hash + scope set, and returns the raw wire key (which the
+// caller MUST surface to the user exactly once). An empty scopes
+// slice is rejected — callers must be explicit; use DefaultScopes()
+// or AllScopes() at the boundary instead.
+func (s *PostgresKeyStore) IssueKeyWithScopes(ctx context.Context, tenantID string, scopes []Scope, expiresAt *time.Time) (IssuedKey, error) {
 	if tenantID == "" {
 		return IssuedKey{}, errors.New("auth: tenant id required")
 	}
+	if len(scopes) == 0 {
+		return IssuedKey{}, errors.New("auth: at least one scope required")
+	}
+	scopes = dedupSortScopes(scopes)
 
 	kid, err := newKID()
 	if err != nil {
@@ -231,10 +254,10 @@ func (s *PostgresKeyStore) IssueKey(ctx context.Context, tenantID string, expire
 
 	var createdAt time.Time
 	err = s.pool.QueryRow(ctx, `
-		INSERT INTO tenant_api_keys (kid, tenant_id, hash, prefix, expires_at)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO tenant_api_keys (kid, tenant_id, hash, prefix, scopes, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING created_at
-	`, kid, tenantID, hash, prefix, expiresAt).Scan(&createdAt)
+	`, kid, tenantID, hash, prefix, ScopesAsStrings(scopes), expiresAt).Scan(&createdAt)
 	if err != nil {
 		return IssuedKey{}, fmt.Errorf("auth: insert key: %w", err)
 	}
@@ -244,6 +267,7 @@ func (s *PostgresKeyStore) IssueKey(ctx context.Context, tenantID string, expire
 		KID:       kid,
 		Raw:       raw,
 		Prefix:    prefix,
+		Scopes:    scopes,
 		CreatedAt: createdAt,
 		ExpiresAt: expiresAt,
 	}, nil
@@ -393,6 +417,7 @@ type validationCache struct {
 
 type cacheEntry struct {
 	tenantID  string
+	scopes    []Scope
 	expiresAt time.Time
 }
 
@@ -404,29 +429,26 @@ func newValidationCache(size int, ttl time.Duration) *validationCache {
 	}
 }
 
-func (c *validationCache) get(digest string) (string, bool) {
+func (c *validationCache) get(digest string) (cacheEntry, bool) {
 	c.mu.RLock()
 	e, ok := c.entries[digest]
 	c.mu.RUnlock()
 	if !ok {
-		return "", false
+		return cacheEntry{}, false
 	}
 	if time.Now().After(e.expiresAt) {
 		c.mu.Lock()
 		delete(c.entries, digest)
 		c.mu.Unlock()
-		return "", false
+		return cacheEntry{}, false
 	}
-	return e.tenantID, true
+	return e, true
 }
 
-func (c *validationCache) put(digest, tenantID string) {
+func (c *validationCache) put(digest, tenantID string, scopes []Scope) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.entries) >= c.size {
-		// Simple capacity guard: evict ~10% of entries chosen
-		// arbitrarily by map iteration order. Good enough for a
-		// short-TTL cache; a real LRU is unnecessary at this TTL.
 		evict := c.size / 10
 		for k := range c.entries {
 			delete(c.entries, k)
@@ -437,6 +459,7 @@ func (c *validationCache) put(digest, tenantID string) {
 	}
 	c.entries[digest] = cacheEntry{
 		tenantID:  tenantID,
+		scopes:    scopes,
 		expiresAt: time.Now().Add(c.ttl),
 	}
 }

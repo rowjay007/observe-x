@@ -123,7 +123,9 @@ func buildRouter(authMW *auth.AuthMiddleware, exec *executor.Executor, logger *z
 
 	authorized := r.Group("/")
 	authorized.Use(ginAuth(authMW))
-	authorized.POST("/v1/query", queryHandler(exec, logger))
+	// Phase C-3a: query endpoint requires the explicit `query` scope.
+	// An ingest-only key (the default) cannot read data.
+	authorized.POST("/v1/query", auth.GinRequireScope(auth.ScopeQuery), queryHandler(exec, logger))
 
 	return r
 }

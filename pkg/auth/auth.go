@@ -72,17 +72,30 @@ func NewStatelessKeyValidator(secret string) *StatelessKeyValidator {
 }
 
 func (v *StatelessKeyValidator) ValidateKey(key string) (string, bool) {
+	md, ok := v.ValidateKeyWithMetadata(key)
+	if !ok {
+		return "", false
+	}
+	return md.TenantID, true
+}
+
+// ValidateKeyWithMetadata returns AllScopes() — the stateless
+// validator is dev-only and predates the scope system; we err on the
+// side of "your dev-mode key works for everything." Production
+// deployments MUST use PostgresKeyStore (per ADR-0003) and get real
+// per-key scopes.
+func (v *StatelessKeyValidator) ValidateKeyWithMetadata(key string) (KeyMetadata, bool) {
 	parts := strings.SplitN(key, ":", 2)
 	if len(parts) != 2 {
-		return "", false
+		return KeyMetadata{}, false
 	}
 	tenantID := parts[0]
 	providedHash := parts[1]
 	expected := computeKeyHash(v.secret, tenantID)
 	if subtle.ConstantTimeCompare([]byte(providedHash), []byte(expected)) == 1 {
-		return tenantID, true
+		return KeyMetadata{TenantID: tenantID, Scopes: AllScopes()}, true
 	}
-	return "", false
+	return KeyMetadata{}, false
 }
 
 // GenerateAPIKey returns the dev-mode "tenant:hash(secret||':'||tenant)"
@@ -103,24 +116,38 @@ func computeKeyHash(secret, tenantID string) string {
 
 // MemoryKeyStore is the in-memory implementation used by tests and as
 // Phase B-1 scaffolding. Keys are stored as BLAKE3 digests (constant-
-// time compared on validation), never in plaintext.
+// time compared on validation), never in plaintext. Phase C-3a adds
+// per-entry scope tracking so scope-enforced middleware can be
+// exercised in unit tests.
 type MemoryKeyStore struct {
 	mu      sync.RWMutex
-	entries map[string]string // hash → tenantID
+	entries map[string]memEntry // hash → entry
+}
+
+type memEntry struct {
+	tenantID string
+	scopes   []Scope
 }
 
 func NewMemoryKeyStore() *MemoryKeyStore {
-	return &MemoryKeyStore{entries: make(map[string]string)}
+	return &MemoryKeyStore{entries: make(map[string]memEntry)}
 }
 
-// Add registers a tenant:hash mapping derived from rawKey. Returns the
-// full wire-format key (`tenant:digest`) which SHOULD be shown to the
-// user exactly once.
+// Add registers a tenant:hash mapping derived from rawKey with the
+// DefaultScopes(). Returns the full wire-format key (`tenant:digest`)
+// which SHOULD be shown to the user exactly once.
 func (s *MemoryKeyStore) Add(tenantID, rawKey string) string {
+	return s.AddWithScopes(tenantID, rawKey, DefaultScopes())
+}
+
+// AddWithScopes registers a key with a specific scope set. The scope
+// list is copied — callers may mutate the input afterwards safely.
+func (s *MemoryKeyStore) AddWithScopes(tenantID, rawKey string, scopes []Scope) string {
 	digest := Blake3Sum(rawKey)
 	full := fmt.Sprintf("%s:%s", tenantID, digest)
+	cp := append([]Scope(nil), scopes...)
 	s.mu.Lock()
-	s.entries[digest] = tenantID
+	s.entries[digest] = memEntry{tenantID: tenantID, scopes: cp}
 	s.mu.Unlock()
 	return full
 }
@@ -137,20 +164,28 @@ func (s *MemoryKeyStore) Revoke(key string) {
 }
 
 func (s *MemoryKeyStore) ValidateKey(key string) (string, bool) {
-	parts := strings.SplitN(key, ":", 2)
-	if len(parts) != 2 {
-		return "", false
-	}
-	s.mu.RLock()
-	tenantID, ok := s.entries[parts[1]]
-	s.mu.RUnlock()
+	md, ok := s.ValidateKeyWithMetadata(key)
 	if !ok {
 		return "", false
 	}
-	if subtle.ConstantTimeCompare([]byte(parts[0]), []byte(tenantID)) != 1 {
-		return "", false
+	return md.TenantID, true
+}
+
+func (s *MemoryKeyStore) ValidateKeyWithMetadata(key string) (KeyMetadata, bool) {
+	parts := strings.SplitN(key, ":", 2)
+	if len(parts) != 2 {
+		return KeyMetadata{}, false
 	}
-	return tenantID, true
+	s.mu.RLock()
+	e, ok := s.entries[parts[1]]
+	s.mu.RUnlock()
+	if !ok {
+		return KeyMetadata{}, false
+	}
+	if subtle.ConstantTimeCompare([]byte(parts[0]), []byte(e.tenantID)) != 1 {
+		return KeyMetadata{}, false
+	}
+	return KeyMetadata{TenantID: e.tenantID, Scopes: e.scopes}, true
 }
 
 // ─── HTTP middleware ──────────────────────────────────────────────────────
@@ -179,12 +214,24 @@ func (m *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 			return
 		}
 		key := authHeader[len(bearerScheme):]
-		tenantID, valid := m.keyStore.ValidateKey(key)
+
+		var md KeyMetadata
+		var valid bool
+		if sa, ok := m.keyStore.(ScopeAwareKeyStore); ok {
+			md, valid = sa.ValidateKeyWithMetadata(key)
+		} else {
+			tenantID, ok := m.keyStore.ValidateKey(key)
+			if ok {
+				md = KeyMetadata{TenantID: tenantID, Scopes: DefaultScopes()}
+				valid = true
+			}
+		}
 		if !valid {
 			http.Error(w, "invalid api key", http.StatusForbidden)
 			return
 		}
-		r.Header.Set("X-Tenant-ID", tenantID)
+		r.Header.Set("X-Tenant-ID", md.TenantID)
+		r = r.WithContext(WithScopes(r.Context(), md.Scopes))
 		next.ServeHTTP(w, r)
 	})
 }

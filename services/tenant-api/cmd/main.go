@@ -23,6 +23,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/rowjay007/observe-x/pkg/auditlog"
 	"github.com/rowjay007/observe-x/pkg/auth"
 	"github.com/rowjay007/observe-x/pkg/observability"
 	"github.com/rowjay007/observe-x/pkg/selfobs"
@@ -59,11 +60,21 @@ func main() {
 	}
 	repo := store.New(keyStore.Pool())
 
+	auditExp, auditCloser := buildAuditExporter(ctx, logger)
+	defer func() {
+		shutdownCtx, c := context.WithTimeout(context.Background(), 10*time.Second)
+		defer c()
+		if err := auditCloser(shutdownCtx); err != nil {
+			logger.Warn("audit-log close", zap.Error(err))
+		}
+	}()
+
 	srv := &server{
 		logger:     logger,
 		adminToken: adminToken,
 		repo:       repo,
 		keyStore:   keyStore,
+		auditExp:   auditExp,
 	}
 
 	router := srv.router()
@@ -99,6 +110,7 @@ type server struct {
 	adminToken string
 	repo       *store.Store
 	keyStore   *auth.PostgresKeyStore
+	auditExp   auditlog.Exporter
 	once       sync.Once
 }
 
@@ -233,6 +245,10 @@ func (s *server) deleteTenant(c *gin.Context) {
 
 type issueKeyReq struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Scopes is the canonical scope set baked into the key. An empty
+	// list falls back to auth.DefaultScopes() (ingest only). Unknown
+	// scopes return 400 with the offending value.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 func (s *server) issueAPIKey(c *gin.Context) {
@@ -244,7 +260,13 @@ func (s *server) issueAPIKey(c *gin.Context) {
 	var req issueKeyReq
 	_ = c.BindJSON(&req) // body is optional
 
-	issued, err := s.keyStore.IssueKey(c.Request.Context(), tenantID, req.ExpiresAt)
+	scopes, err := auth.ParseScopes(req.Scopes)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	issued, err := s.keyStore.IssueKeyWithScopes(c.Request.Context(), tenantID, scopes, req.ExpiresAt)
 	if err != nil {
 		s.logger.Error("issue key", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "issue failed"})
@@ -253,11 +275,13 @@ func (s *server) issueAPIKey(c *gin.Context) {
 	s.audit(c, &tenantID, "admin", "api_key.issue", map[string]any{
 		"kid":    issued.KID,
 		"prefix": issued.Prefix,
+		"scopes": auth.ScopesAsStrings(issued.Scopes),
 	})
 	c.JSON(http.StatusCreated, map[string]any{
 		"kid":        issued.KID,
 		"raw_key":    issued.Raw, // show ONCE
 		"prefix":     issued.Prefix,
+		"scopes":     auth.ScopesAsStrings(issued.Scopes),
 		"created_at": issued.CreatedAt,
 		"expires_at": issued.ExpiresAt,
 		"warning":    "raw_key is shown ONCE; store it securely. It will not be retrievable later.",
@@ -304,6 +328,24 @@ func (s *server) audit(c *gin.Context, tenantID *string, actor, action string, d
 	if err := s.repo.WriteAudit(c.Request.Context(), ev); err != nil {
 		s.logger.Warn("audit write failed", zap.Error(err), zap.String("action", action))
 	}
+	if s.auditExp != nil {
+		tid := ""
+		if tenantID != nil {
+			tid = *tenantID
+		}
+		rec := auditlog.Record{
+			TenantID:   tid,
+			Actor:      actor,
+			Action:     action,
+			Details:    details,
+			SourceIP:   srcIP,
+			OccurredAt: time.Now().UTC(),
+		}
+		if err := s.auditExp.Append(c.Request.Context(), rec); err != nil {
+			s.logger.Warn("audit-log export failed",
+				zap.Error(err), zap.String("action", action))
+		}
+	}
 }
 
 func tenantPayload(t store.Tenant) map[string]any {
@@ -327,6 +369,63 @@ func mustEnv(logger *zap.Logger, key string) string {
 		logger.Fatal("required env missing", zap.String("key", key))
 	}
 	return v
+}
+
+// buildAuditExporter wires the audit-log sink based on environment.
+//
+//	OBSERVE_X_AUDIT_LOG_BACKEND   = file | s3 | (unset → NopExporter)
+//	OBSERVE_X_AUDIT_LOG_FILE_PATH = path for backend=file
+//	OBSERVE_X_AUDIT_LOG_S3_BUCKET = bucket for backend=s3
+//	OBSERVE_X_AUDIT_LOG_S3_PREFIX = key prefix (default "audit/")
+//	OBSERVE_X_AUDIT_LOG_S3_REGION = AWS region
+//	OBSERVE_X_AUDIT_LOG_S3_ENDPOINT = custom endpoint (MinIO/R2)
+//	OBSERVE_X_AUDIT_LOG_S3_LOCK   = "" | GOVERNANCE | COMPLIANCE
+//	OBSERVE_X_AUDIT_LOG_S3_RETAIN = duration (e.g. 8760h for 1y)
+//
+// The buffered wrapper isolates the synchronous request path from
+// upload latency; flushes happen on a 60s ticker (or 1000 records).
+func buildAuditExporter(ctx context.Context, logger *zap.Logger) (auditlog.Exporter, func(context.Context) error) {
+	backend := os.Getenv("OBSERVE_X_AUDIT_LOG_BACKEND")
+	switch backend {
+	case "file":
+		path := getEnv("OBSERVE_X_AUDIT_LOG_FILE_PATH", "/var/log/observex/audit.ndjson")
+		fe, err := auditlog.NewFileExporter(path)
+		if err != nil {
+			logger.Warn("audit-log file exporter init failed; falling back to nop", zap.Error(err))
+			return auditlog.NopExporter{}, func(context.Context) error { return nil }
+		}
+		buf := auditlog.NewBufferedExporter(fe, 4096)
+		logger.Info("audit-log exporter active", zap.String("backend", "file"), zap.String("path", path))
+		return buf, buf.Close
+	case "s3":
+		bucket := os.Getenv("OBSERVE_X_AUDIT_LOG_S3_BUCKET")
+		if bucket == "" {
+			logger.Warn("audit-log s3 bucket missing; falling back to nop")
+			return auditlog.NopExporter{}, func(context.Context) error { return nil }
+		}
+		retain, _ := time.ParseDuration(os.Getenv("OBSERVE_X_AUDIT_LOG_S3_RETAIN"))
+		s3e, err := auditlog.NewS3Exporter(ctx, auditlog.S3Options{
+			Bucket:         bucket,
+			Prefix:         os.Getenv("OBSERVE_X_AUDIT_LOG_S3_PREFIX"),
+			Region:         os.Getenv("OBSERVE_X_AUDIT_LOG_S3_REGION"),
+			Endpoint:       os.Getenv("OBSERVE_X_AUDIT_LOG_S3_ENDPOINT"),
+			UseSSL:         os.Getenv("OBSERVE_X_AUDIT_LOG_S3_INSECURE") == "",
+			ObjectLockMode: os.Getenv("OBSERVE_X_AUDIT_LOG_S3_LOCK"),
+			RetainFor:      retain,
+		})
+		if err != nil {
+			logger.Warn("audit-log s3 exporter init failed; falling back to nop", zap.Error(err))
+			return auditlog.NopExporter{}, func(context.Context) error { return nil }
+		}
+		buf := auditlog.NewBufferedExporter(s3e, 4096)
+		logger.Info("audit-log exporter active",
+			zap.String("backend", "s3"),
+			zap.String("bucket", bucket),
+			zap.String("lock", os.Getenv("OBSERVE_X_AUDIT_LOG_S3_LOCK")))
+		return buf, buf.Close
+	default:
+		return auditlog.NopExporter{}, func(context.Context) error { return nil }
+	}
 }
 
 func getEnv(key, fallback string) string {
