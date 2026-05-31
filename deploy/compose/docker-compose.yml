@@ -1,0 +1,162 @@
+# Full ObserveX stack for local development and acceptance testing.
+# Boots ClickHouse, Postgres, Redis, NATS, Prometheus, Grafana, AND
+# every ObserveX service. Use this in place of tests/docker-compose.yml
+# when you need the full data plane.
+#
+# Usage:
+#   docker compose -f deploy/compose/docker-compose.yml up --build -d
+#
+# Bring-up order is health-check-driven; Compose will wait until
+# infra is `healthy` before starting application services.
+
+services:
+  # ─── Infra ──────────────────────────────────────────────────────────
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    ports: ["8123:8123", "9000:9000"]
+    environment:
+      CLICKHOUSE_DB: observex
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  postgres:
+    image: postgres:15-alpine
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_DB: observex
+      POSTGRES_USER: observex
+      POSTGRES_PASSWORD: observex
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U observex"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  nats:
+    image: nats:2-alpine
+    ports: ["4222:4222", "8222:8222"]
+    command: ["--jetstream", "--store_dir", "/data"]
+    volumes: ["nats_data:/data"]
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8222/varz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ─── Observability of ObserveX itself ───────────────────────────────
+  prometheus:
+    image: prom/prometheus:v3.0.0
+    ports: ["9090:9090"]
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=24h"]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    ports: ["3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: observex
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on: [prometheus]
+
+  # ─── ObserveX services ──────────────────────────────────────────────
+  tenant-api:
+    build:
+      context: ../..
+      dockerfile: build/docker/Dockerfile
+      args: { SERVICE: tenant-api }
+    ports: ["7300:7300"]
+    environment:
+      OBSERVE_X_POSTGRES_URL: postgres://observex:observex@postgres:5432/observex?sslmode=disable
+      OBSERVE_X_TENANT_API_ADMIN_TOKEN: dev-admin-token-change-me
+      OBSERVE_X_OTLP_ENDPOINT: http://ingest-gateway:7000
+      OBSERVE_X_OTLP_INSECURE: "1"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  ingest-gateway:
+    build:
+      context: ../..
+      dockerfile: build/docker/Dockerfile
+      args: { SERVICE: ingest-gateway }
+    ports: ["4318:4318", "7000:7000"]
+    environment:
+      OBSERVE_X_WAL_PATH: /var/lib/observex/wal
+      OBSERVE_X_CLICKHOUSE_ADDR: clickhouse:9000
+      OBSERVE_X_CLICKHOUSE_DB: observex
+      OBSERVE_X_POSTGRES_URL: postgres://observex:observex@postgres:5432/observex?sslmode=disable
+      OBSERVE_X_ALERT_MANAGER_URL: http://alert-manager:7700
+      OBSERVE_X_OTLP_ENDPOINT: http://ingest-gateway:7000
+      OBSERVE_X_OTLP_INSECURE: "1"
+      OBSERVE_X_REDIS_URL: redis://redis:6379
+    volumes:
+      - ingest_wal:/var/lib/observex/wal
+    depends_on:
+      clickhouse: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  query-engine:
+    build:
+      context: ../..
+      dockerfile: build/docker/Dockerfile
+      args: { SERVICE: query-engine }
+    ports: ["7100:7100"]
+    environment:
+      OBSERVE_X_CLICKHOUSE_ADDR: clickhouse:9000
+      OBSERVE_X_CLICKHOUSE_DB: observex
+      OBSERVE_X_POSTGRES_URL: postgres://observex:observex@postgres:5432/observex?sslmode=disable
+      OBSERVE_X_OTLP_ENDPOINT: http://ingest-gateway:7000
+      OBSERVE_X_OTLP_INSECURE: "1"
+    depends_on:
+      clickhouse: { condition: service_healthy }
+
+  alert-manager:
+    build:
+      context: ../..
+      dockerfile: build/docker/Dockerfile
+      args: { SERVICE: alert-manager }
+    ports: ["7700:7700"]
+    environment:
+      OBSERVE_X_POSTGRES_URL: postgres://observex:observex@postgres:5432/observex?sslmode=disable
+      OBSERVE_X_WEBHOOK_URL: http://localhost:9999/sink
+      OBSERVE_X_OTLP_ENDPOINT: http://ingest-gateway:7000
+      OBSERVE_X_OTLP_INSECURE: "1"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  ml-anomaly-detector:
+    build:
+      context: ../..
+      dockerfile: build/docker/Dockerfile
+      args: { SERVICE: ml-anomaly-detector }
+    ports: ["7200:7200"]
+    environment:
+      OBSERVE_X_OTLP_ENDPOINT: http://ingest-gateway:7000
+      OBSERVE_X_OTLP_INSECURE: "1"
+
+volumes:
+  clickhouse_data:
+  postgres_data:
+  nats_data:
+  ingest_wal:

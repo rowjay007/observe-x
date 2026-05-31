@@ -114,12 +114,33 @@ jobs:
         run: go build -trimpath -o bin/query-engine ./services/query-engine/cmd
       - name: Build ml-anomaly-detector
         run: go build -trimpath -o bin/ml-anomaly-detector ./services/ml-anomaly-detector/cmd
+      - name: Build alert-manager
+        run: go build -trimpath -o bin/alert-manager ./services/alert-manager/cmd
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: binaries
           path: bin/
           retention-days: 7
+
+  helm:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.1
+      - name: helm lint
+        run: helm lint deploy/helm/observex
+      - name: helm template (default values)
+        run: helm template observex deploy/helm/observex > /tmp/rendered.yaml
+      - name: kubeval rendered manifests
+        uses: instrumenta/kubeval-action@master
+        continue-on-error: true
+        with:
+          files: /tmp/rendered.yaml
 
   # Heavy throughput validation runs on demand via workflow_dispatch or
   # nightly schedule — not on every PR (k6 spins up Docker services and

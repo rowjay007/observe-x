@@ -27,6 +27,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/rowjay007/observe-x/pkg/observability"
+	"github.com/rowjay007/observe-x/pkg/selfobs"
 	"github.com/rowjay007/observe-x/services/ml-anomaly-detector/internal/detector"
 )
 
@@ -44,6 +45,15 @@ var (
 func main() {
 	logger, _ := zap.NewProduction()
 	defer func() { _ = logger.Sync() }()
+
+	tp, _ := selfobs.InitFromEnv(context.Background(), "ml-anomaly-detector", "1.0.0")
+	if tp != nil {
+		defer func() {
+			c, cc := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cc()
+			_ = tp.Shutdown(c)
+		}()
+	}
 
 	d := detector.New(detector.Options{
 		WarmupSamples: envInt("OBSERVE_X_ANOMALY_WARMUP", 50),

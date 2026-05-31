@@ -1,0 +1,75 @@
+# Defaults assume an existing Postgres + ClickHouse + Redis cluster
+# you point us at. Set these via `helm upgrade --set` or a values
+# override file. Secrets (passwords, API keys) are pulled from
+# pre-existing Kubernetes Secret objects via `existingSecret`.
+
+global:
+  imageRegistry: ghcr.io/rowjay007/observe-x
+  imageTag: "1.0.0"
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets: []
+  # ServiceMonitor support (kube-prometheus-stack); flip false if you
+  # use a different scraping path.
+  serviceMonitor:
+    enabled: true
+    namespace: ""  # empty ⇒ same as release namespace
+    interval: 30s
+    scrapeTimeout: 10s
+
+# Existing secret should contain:
+#   postgres-url       full DSN
+#   clickhouse-pass    (optional)
+#   admin-token        for tenant-api
+#   pagerduty-key      (optional)
+#   slack-webhook      (optional)
+existingSecret: observex-config
+
+clickhouse:
+  addr: clickhouse.observex.svc.cluster.local:9000
+  database: observex
+  user: default
+
+ingestGateway:
+  enabled: true
+  replicaCount: 3
+  resources:
+    requests: { cpu: "500m", memory: "1Gi" }
+    limits:   { cpu: "2",    memory: "4Gi" }
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: ""
+
+queryEngine:
+  enabled: true
+  replicaCount: 2
+  resources:
+    requests: { cpu: "250m", memory: "512Mi" }
+    limits:   { cpu: "1",    memory: "2Gi" }
+
+tenantApi:
+  enabled: true
+  replicaCount: 2
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits:   { cpu: "500m", memory: "1Gi" }
+
+alertManager:
+  enabled: true
+  replicaCount: 2
+  resources:
+    requests: { cpu: "100m", memory: "256Mi" }
+    limits:   { cpu: "500m", memory: "1Gi" }
+
+mlAnomalyDetector:
+  enabled: true
+  replicaCount: 1
+  resources:
+    requests: { cpu: "200m", memory: "512Mi" }
+    limits:   { cpu: "1",    memory: "2Gi" }
+
+selfObservability:
+  enabled: true
+  endpoint: http://observex-ingest-gateway:7000
+  samplingFraction: "0.10"
+  insecure: "1"

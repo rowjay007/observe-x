@@ -1,0 +1,25 @@
+# Prometheus scrape config for the local docker-compose stack. Every
+# ObserveX service exposes /metrics on its main HTTP port via
+# pkg/observability.MetricsHandler.
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    cluster: observex-local
+
+scrape_configs:
+  - job_name: ingest-gateway
+    static_configs:
+      - targets: ["ingest-gateway:7000"]
+  - job_name: query-engine
+    static_configs:
+      - targets: ["query-engine:7100"]
+  - job_name: tenant-api
+    static_configs:
+      - targets: ["tenant-api:7300"]
+  - job_name: alert-manager
+    static_configs:
+      - targets: ["alert-manager:7700"]
+  - job_name: ml-anomaly-detector
+    static_configs:
+      - targets: ["ml-anomaly-detector:7200"]

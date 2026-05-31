@@ -1,7 +1,7 @@
 # ObserveX: Distributed Observability & APM Platform — Production Roadmap
 
 **Project:** ObserveX v1.0  
-**Status:** Phase A + Phase B complete — Phase C (production hardening) next  
+**Status:** Phase A + Phase B + Phase C (slices 1–2) complete — remaining Phase C work (UI, cold tier, ArgoCD, OIDC, scopes) next  
 **Duration:** 18 Weeks (14–18 Weeks)  
 **Go Version:** 1.25+  
 **Difficulty:** Mastery-Level
@@ -48,32 +48,35 @@ ObserveX is a **self-hosted, multi-tenant observability stack** that replaces co
 - [x] **query-engine:** HTTP service, allow-list-validated planner with mandatory tenant_id injection, ClickHouse executor, NDJSON streaming with header + trailer.
 - [ ] **Phase C deferrals:** Arrow IPC codec, cost-based optimiser for joins/CTEs, federated S3 + DuckDB execution.
 
-### Phase 4: Intelligence & Alerting (Phase B-5 + Phase C) 🧠 partial
+### Phase 4: Intelligence & Alerting (Phase B-5 + Phase C-1) 🧠 ✅
 
 - [x] **ml-anomaly-detector skeleton:** rolling z-score (EWMA mean + variance) per (tenant, metric); HTTP ingest at `/v1/observations`; Prometheus anomaly counter.
-- [ ] **alert-manager (Phase C):** SLO burn-rate engine, PagerDuty/Slack routing.
-- [ ] **Real ML (Phase C):** ONNX Runtime integration for Isolation Forest / LSTM.
+- [x] **alert-manager (Phase C-1):** SLO burn-rate engine (multi-window multi-burn-rate per the Google SRE Workbook), Postgres-backed alert state with dedup + silence support, Slack / PagerDuty / Webhook notifier abstractions, CEP → alert-manager wire via `pkg/alertsink`. See ADR-0009.
+- [ ] **Real ML (Phase C-3+):** ONNX Runtime integration for Isolation Forest / LSTM.
 
-### Phase 5: UI & Production Hardening (Phase C) 🚀 pending
+### Phase 5: UI & Production Hardening (Phase C) 🚀 partial
 
-- [ ] **ui-server:** React dashboard served via `embed.FS`.
-- [ ] **Cold Storage:** S3 + Parquet lifecycle for traces > 7d, metrics > 30d.
-- [ ] **K8s & GitOps:** Helm charts + ArgoCD apps for all six services.
-- [ ] **Self-Observability:** ObserveX scraping its own `/metrics` endpoints; OTLP exporter loopback for traces.
+- [x] **Self-Observability (Phase C-2):** `pkg/selfobs` OTel SDK wrapper; every service emits traces back through the ingest-gateway OTLP loopback; default ParentBased(0.10) sampling. See ADR-0010.
+- [x] **Deploy story (Phase C-2):** single multi-stage `build/docker/Dockerfile`; full `deploy/compose/docker-compose.yml` (Prometheus + Grafana + every service); minimal-but-real Helm chart at `deploy/helm/observex/` with ServiceMonitors. `helm lint` clean.
+- [ ] **ui-server (Phase C-3):** React dashboard served via `embed.FS`.
+- [ ] **Cold Storage (Phase C-3):** S3 + Parquet lifecycle for traces > 7d, metrics > 30d.
+- [ ] **GitOps (Phase C-3):** ArgoCD `Application` examples on top of the Helm chart.
 - [ ] **Audit log export** to S3 with object-lock for SOC2.
 - [ ] **Operator OIDC** in front of tenant-api admin endpoints.
 - [ ] **Read/write scopes** on API keys.
+- [ ] **gRPC OTLP receiver** alongside the HTTP one.
 
 ---
 
 ## 🛠️ Tooling & Stack
 
 - **Languages:** Go 1.25, SQL, participle PEG (ObserveQL).
-- **Data Stores:** ClickHouse (hot), PostgreSQL (control plane), Redis (optional sampler state), S3 + Parquet (cold tier — Phase C).
-- **Communication:** gRPC (OTLP transport, Phase C), HTTP/JSON + NDJSON streams, NATS JetStream (Phase C).
-- **Observability:** OTLP/HTTP receivers, `/metrics` Prometheus endpoints on every service, pprof gated.
+- **Data Stores:** ClickHouse (hot), PostgreSQL (control plane + alert state), Redis (optional sampler state), S3 + Parquet (cold tier — Phase C-3).
+- **Communication:** HTTP/JSON + NDJSON streams; gRPC OTLP receiver (Phase C-3); NATS JetStream (Phase C-3).
+- **Observability of itself:** OTLP/HTTP loopback via `pkg/selfobs` (W3C TraceContext + ParentBased sampling), `/metrics` Prometheus endpoints on every service, pprof gated, Grafana dashboard at `deploy/grafana/dashboards/observex-overview.json`.
 - **Plugins:** wazero (pure-Go WASM runtime).
-- **DevOps:** Docker Compose (local), Helm + ArgoCD (Phase C), GitHub Actions (CI today).
+- **Alerting:** Slack / PagerDuty / Webhook notifiers behind the `pkg/notifier` interface; SLO burn-rate per Google SRE Workbook.
+- **DevOps:** `build/docker/Dockerfile` (distroless/static), Docker Compose for local, Helm chart at `deploy/helm/observex/` (lint clean), GitHub Actions CI with helm-lint + kubeval.
 
 ---
 

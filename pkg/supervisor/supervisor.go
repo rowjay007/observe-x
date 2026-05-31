@@ -56,6 +56,10 @@ type Options struct {
 	BackoffMax time.Duration
 	// HealthInterval — how often the monitor loop sweeps actors.
 	HealthInterval time.Duration
+	// ActorOptions is propagated to every new and restarted actor.
+	// The zero value is fine — actor.NewTenantActorWithOptions fills
+	// in its own defaults.
+	ActorOptions actor.Options
 }
 
 func (o Options) withDefaults() Options {
@@ -185,7 +189,7 @@ func (s *Supervisor) getOrCreate(tenantID string) *managedActor {
 		}
 		return m
 	}
-	a := actor.NewTenantActor(tenantID, s.opts.MailboxSize)
+	a := actor.NewTenantActorWithOptions(tenantID, s.opts.MailboxSize, s.opts.ActorOptions)
 	if err := a.Start(s.rootCtx); err != nil {
 		return nil
 	}
@@ -196,6 +200,16 @@ func (s *Supervisor) getOrCreate(tenantID string) *managedActor {
 	}
 	s.actors[tenantID] = m
 	return m
+}
+
+// SetActorOptions updates the template used for every new (and
+// restarted) actor. Existing actors are NOT mutated — the change takes
+// effect on the next actor creation. Intended for runtime wiring of
+// the EventSink at engine-startup time, not for live tuning.
+func (s *Supervisor) SetActorOptions(opts actor.Options) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.opts.ActorOptions = opts
 }
 
 // ─── monitor loop ─────────────────────────────────────────────────────────
@@ -272,7 +286,7 @@ func (s *Supervisor) restartActor(m *managedActor) {
 		return
 	}
 
-	fresh := actor.NewTenantActor(m.tenantID, s.opts.MailboxSize)
+	fresh := actor.NewTenantActorWithOptions(m.tenantID, s.opts.MailboxSize, s.opts.ActorOptions)
 	if err := fresh.Start(s.rootCtx); err != nil {
 		return
 	}

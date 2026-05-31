@@ -39,6 +39,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rowjay007/observe-x/pkg/actor"
 	"github.com/rowjay007/observe-x/pkg/observability"
 	"github.com/rowjay007/observe-x/pkg/sampling"
 	"github.com/rowjay007/observe-x/pkg/signal"
@@ -399,4 +400,12 @@ func (e *ProcessingEngine) shouldPersist(sig signal.Signal) bool {
 // metric-registry-backed scraping; we keep it for the existing tests.
 func (e *ProcessingEngine) Stats() (received, dropped, walWrites int64) {
 	return e.signalsReceived.Load(), e.signalsDropped.Load(), e.walWrites.Load()
+}
+
+// SetAlertSink wires a CEP-event sink into every actor (existing
+// actors are not retroactively patched — the sink takes effect for
+// the next actor created/restarted). Intended to be called once at
+// startup, before any traffic, when the alert-manager URL is known.
+func (e *ProcessingEngine) SetAlertSink(sink actor.EventSink) {
+	e.sup.SetActorOptions(actor.Options{EventSink: sink})
 }

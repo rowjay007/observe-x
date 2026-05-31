@@ -1,0 +1,27 @@
+apiVersion: v2
+name: observex
+description: |
+  ObserveX — a multi-tenant distributed observability + APM platform.
+  Renders Deployments + Services + ServiceMonitors for every
+  ObserveX micro-service. Infra (ClickHouse, Postgres, Redis, NATS)
+  is intentionally NOT bundled — operate it via your platform's
+  preferred path (cloud-managed, dedicated chart, operator).
+
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+keywords:
+  - observability
+  - apm
+  - tracing
+  - logs
+  - metrics
+  - opentelemetry
+
+maintainers:
+  - name: ObserveX
+    url: https://github.com/rowjay007/observe-x
+
+annotations:
+  observex.io/phase: "C-2"

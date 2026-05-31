@@ -48,14 +48,31 @@ type TenantActor struct {
 	lastEventAt    time.Time
 }
 
-// Options tunes the CEP rule thresholds that the actor registers on
-// Start. Zero values fall back to production-safe defaults (see
-// withDefaults). Tests can supply tighter values for tiny synthetic
-// bursts; Phase C will surface per-tenant overrides via tenant-api.
+// EventSink is the contract between the actor and the alerting plane.
+// Implementations should be non-blocking on the hot path — they'll be
+// called from inside the actor's processing goroutine. A typical
+// implementation buffers to a channel and flushes to the
+// alert-manager HTTP endpoint in a separate goroutine; see
+// services/ingest-gateway/internal/alertsink for the wire shape.
+type EventSink interface {
+	Publish(ev cep.Event)
+}
+
+// NoopEventSink is the default — drops events on the floor. Tests
+// that don't care about alerting use this implicitly.
+type NoopEventSink struct{}
+
+func (NoopEventSink) Publish(cep.Event) {}
+
+// Options tunes the CEP rule thresholds and the alert sink. Zero
+// values fall back to production-safe defaults (see withDefaults).
+// Tests can supply tighter values for tiny synthetic bursts;
+// per-tenant overrides land in Phase C via tenant-api.
 type Options struct {
 	ErrorRateThresholdEPS float64       // errors per second
 	LatencyThresholdMS    float64       // peak ms
 	Window                time.Duration // CEP sliding window
+	EventSink             EventSink     // where CEP events go; default: drop
 }
 
 func (o Options) withDefaults() Options {
@@ -67,6 +84,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.Window <= 0 {
 		o.Window = 5 * time.Minute
+	}
+	if o.EventSink == nil {
+		o.EventSink = NoopEventSink{}
 	}
 	return o
 }
@@ -165,5 +185,6 @@ func (a *TenantActor) processSignal(sig signal.Signal) {
 		a.lastEventType = event.Type
 		a.lastEventAt = event.Timestamp
 		a.mu.Unlock()
+		a.opts.EventSink.Publish(*event)
 	}
 }

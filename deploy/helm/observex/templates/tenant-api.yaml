@@ -1,0 +1,68 @@
+{{- if .Values.tenantApi.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "observex.fullname" . }}-tenant-api
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: tenant-api
+spec:
+  replicas: {{ .Values.tenantApi.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "observex.selectorLabels" (dict "ctx" . "component" "tenant-api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "observex.selectorLabels" (dict "ctx" . "component" "tenant-api") | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: tenant-api
+          image: {{ include "observex.image" (dict "Values" .Values "component" "tenant-api") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - { name: http, containerPort: 7300 }
+          env:
+            - name: OBSERVE_X_TENANT_API_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef: { name: {{ .Values.existingSecret }}, key: admin-token }
+            {{- include "observex.commonEnv" . | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+          resources:
+            {{- toYaml .Values.tenantApi.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "observex.fullname" . }}-tenant-api
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "observex.selectorLabels" (dict "ctx" . "component" "tenant-api") | nindent 4 }}
+  ports:
+    - { name: http, port: 7300, targetPort: http }
+{{- if .Values.global.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "observex.fullname" . }}-tenant-api
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "observex.selectorLabels" (dict "ctx" . "component" "tenant-api") | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.global.serviceMonitor.interval }}
+{{- end }}
+{{- end }}

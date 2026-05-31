@@ -1,0 +1,78 @@
+{{- if .Values.queryEngine.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "observex.fullname" . }}-query-engine
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: query-engine
+spec:
+  replicas: {{ .Values.queryEngine.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "observex.selectorLabels" (dict "ctx" . "component" "query-engine") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "observex.selectorLabels" (dict "ctx" . "component" "query-engine") | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "7100"
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: query-engine
+          image: {{ include "observex.image" (dict "Values" .Values "component" "query-engine") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - { name: http, containerPort: 7100 }
+          env:
+            - name: OBSERVE_X_CLICKHOUSE_ADDR
+              value: {{ .Values.clickhouse.addr | quote }}
+            - name: OBSERVE_X_CLICKHOUSE_DB
+              value: {{ .Values.clickhouse.database | quote }}
+            {{- include "observex.commonEnv" . | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.queryEngine.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "observex.fullname" . }}-query-engine
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "observex.selectorLabels" (dict "ctx" . "component" "query-engine") | nindent 4 }}
+  ports:
+    - { name: http, port: 7100, targetPort: http }
+{{- if .Values.global.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "observex.fullname" . }}-query-engine
+  {{- if .Values.global.serviceMonitor.namespace }}
+  namespace: {{ .Values.global.serviceMonitor.namespace }}
+  {{- end }}
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "observex.selectorLabels" (dict "ctx" . "component" "query-engine") | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.global.serviceMonitor.interval }}
+{{- end }}
+{{- end }}

@@ -4,16 +4,19 @@ Distributed observability and APM platform written in Go. Self-hosted,
 multi-tenant ingestion, processing, storage, and query engine for
 metrics, logs, traces, and profiling data.
 
-> **Status — Phase B complete.** All five Phase B sub-phases have
-> landed. ObserveX now has real OTLP/HTTP receivers, a Postgres-
-> backed tenant control plane with RLS, an OTP-flavoured supervisor
-> with restart-strategy and quarantine, a sliding-window CEP engine,
-> an EWMA-baseline adaptive sampler with optional Redis state, an
-> ObserveQL parser + query engine that streams NDJSON results from
-> ClickHouse with tenant-id injection, a wazero-based WASM plugin
-> host, and a rolling-z-score anomaly-detector skeleton.
-> See [`docs/adr/`](./docs/adr) for the eight ADRs and
-> [`roadmap.md`](./roadmap.md) for the Phase C scope.
+> **Status — Phase C slices 1 and 2 complete.** On top of Phase B,
+> ObserveX now ships a real **alert-manager service** (SLO burn-rate
+> per Google SRE Workbook, Postgres-backed dedup + silences,
+> Slack/PagerDuty/Webhook notifiers behind `pkg/notifier`), CEP →
+> alert-manager wire via `pkg/alertsink`, **self-observability**
+> through `pkg/selfobs` (OTel SDK loopback into the ingest-gateway),
+> a single multi-stage Dockerfile, a full
+> [`deploy/compose`](./deploy/compose) stack (Prometheus + Grafana +
+> every service), and a real [`deploy/helm/observex`](./deploy/helm)
+> chart (`helm lint` clean, ServiceMonitors included).
+> See [`docs/adr/`](./docs/adr) for the ten ADRs and
+> [`roadmap.md`](./roadmap.md) for the remaining Phase C scope (UI,
+> S3 cold tier, ArgoCD, OIDC, key scopes, gRPC OTLP).
 
 ## Quick start
 
@@ -98,7 +101,34 @@ go run ./services/ingest-gateway/cmd
 | tenant-api           | 7400 | `/v1/tenants`, `/v1/tenants/:id/api-keys`, `/health`, `/metrics`                               |
 | query-engine         | 7500 | `POST /v1/query` (ObserveQL, NDJSON results), `/health`, `/metrics`                            |
 | ml-anomaly-detector  | 7600 | `POST /v1/observations`, `/health`, `/metrics`                                                 |
+| **alert-manager**    | 7700 | `POST /v1/events`, `POST /v1/observations` (SLO), `POST /v1/slos`, `POST /v1/silences`, `GET /v1/alerts`, `/health`, `/metrics` |
 | pprof (gated)        | 4318 | `/debug/pprof/*` when `OBSERVE_X_PPROF_ENABLED=true`                                           |
+
+### Full stack via Docker Compose
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml up --build -d
+# Prometheus at http://localhost:9090
+# Grafana at    http://localhost:3000  (anon viewer, admin/observex)
+```
+
+This brings up every ObserveX service plus ClickHouse, Postgres,
+Redis, NATS, Prometheus and Grafana. Grafana is pre-provisioned with
+the "ObserveX — Platform Overview" dashboard fed from Prometheus.
+
+### Kubernetes (Helm)
+
+```bash
+helm install observex deploy/helm/observex \
+  --namespace observex --create-namespace \
+  --set existingSecret=observex-config
+```
+
+The chart is intentionally infra-agnostic — point it at your existing
+managed Postgres / ClickHouse / Redis via the values in
+`deploy/helm/observex/values.yaml`. Secrets (Postgres DSN, admin
+tokens, Slack/PagerDuty keys) come from an existing
+`observex-config` `Secret` in the same namespace.
 
 ### Querying
 

@@ -32,6 +32,7 @@ import (
 	"github.com/rowjay007/observe-x/pkg/auth"
 	"github.com/rowjay007/observe-x/pkg/observability"
 	"github.com/rowjay007/observe-x/pkg/observeql"
+	"github.com/rowjay007/observe-x/pkg/selfobs"
 	chstorage "github.com/rowjay007/observe-x/pkg/storage/clickhouse"
 	"github.com/rowjay007/observe-x/services/query-engine/internal/executor"
 )
@@ -39,6 +40,18 @@ import (
 func main() {
 	logger, _ := zap.NewProduction()
 	defer func() { _ = logger.Sync() }()
+
+	tp, err := selfobs.InitFromEnv(context.Background(), "query-engine", "1.0.0")
+	if err != nil {
+		logger.Warn("selfobs init failed; tracing disabled", zap.Error(err))
+	}
+	if tp != nil {
+		defer func() {
+			ctx, c := context.WithTimeout(context.Background(), 5*time.Second)
+			defer c()
+			_ = tp.Shutdown(ctx)
+		}()
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

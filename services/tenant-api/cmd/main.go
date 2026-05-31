@@ -25,12 +25,22 @@ import (
 
 	"github.com/rowjay007/observe-x/pkg/auth"
 	"github.com/rowjay007/observe-x/pkg/observability"
+	"github.com/rowjay007/observe-x/pkg/selfobs"
 	"github.com/rowjay007/observe-x/services/tenant-api/store"
 )
 
 func main() {
 	logger, _ := zap.NewProduction()
 	defer func() { _ = logger.Sync() }()
+
+	tp, _ := selfobs.InitFromEnv(context.Background(), "tenant-api", "1.0.0")
+	if tp != nil {
+		defer func() {
+			ctx, c := context.WithTimeout(context.Background(), 5*time.Second)
+			defer c()
+			_ = tp.Shutdown(ctx)
+		}()
+	}
 
 	dsn := mustEnv(logger, "OBSERVE_X_POSTGRES_URL")
 	adminToken := mustEnv(logger, "OBSERVE_X_TENANT_API_ADMIN_TOKEN")

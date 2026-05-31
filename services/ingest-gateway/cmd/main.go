@@ -16,9 +16,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/rowjay007/observe-x/pkg/alertsink"
 	"github.com/rowjay007/observe-x/pkg/auth"
 	"github.com/rowjay007/observe-x/pkg/engine"
 	"github.com/rowjay007/observe-x/pkg/observability"
+	"github.com/rowjay007/observe-x/pkg/selfobs"
 	pkgsignal "github.com/rowjay007/observe-x/pkg/signal"
 	chstorage "github.com/rowjay007/observe-x/pkg/storage/clickhouse"
 	"github.com/rowjay007/observe-x/services/ingest-gateway/internal/otlp"
@@ -32,6 +34,22 @@ func main() {
 		panic("ingest-gateway: zap init failed: " + err.Error())
 	}
 	defer func() { _ = logger.Sync() }()
+
+	// Phase C-2: self-observability. The ingest-gateway exports its
+	// own traces back through itself (loopback). Missing env vars ⇒
+	// no-op provider; never a startup failure.
+	tracerCtx := context.Background()
+	tp, err := selfobs.InitFromEnv(tracerCtx, "ingest-gateway", "1.0.0")
+	if err != nil {
+		logger.Warn("selfobs init failed; tracing disabled", zap.Error(err))
+	}
+	if tp != nil {
+		defer func() {
+			ctx, c := context.WithTimeout(context.Background(), 5*time.Second)
+			defer c()
+			_ = tp.Shutdown(ctx)
+		}()
+	}
 
 	walPath := getEnv("OBSERVE_X_WAL_PATH", "/tmp/observex/wal")
 
@@ -66,6 +84,19 @@ func main() {
 	}
 	defer keyStoreClose()
 	authMW := auth.NewAuthMiddleware(keyStore)
+
+	// Phase C-1: when the alert-manager is configured, every actor's
+	// CEP events forward through this sink. If the env var is unset,
+	// CEP events are dropped (loud counter, no notification).
+	if amURL := os.Getenv("OBSERVE_X_ALERT_MANAGER_URL"); amURL != "" {
+		sink := alertsink.NewHTTPSink(alertsink.HTTPOptions{
+			Endpoint: amURL + "/v1/events",
+			APIKey:   os.Getenv("OBSERVE_X_ALERT_MANAGER_API_KEY"),
+		})
+		defer sink.Stop()
+		procEngine.SetAlertSink(sink)
+		logger.Info("alert-manager wired", zap.String("url", amURL))
+	}
 
 	serverTLS, err := loadServerTLSConfig()
 	if err != nil {

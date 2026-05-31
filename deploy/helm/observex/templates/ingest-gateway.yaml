@@ -1,0 +1,112 @@
+{{- if .Values.ingestGateway.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "observex.fullname" . }}-ingest-gateway
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ingest-gateway
+spec:
+  replicas: {{ .Values.ingestGateway.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "observex.selectorLabels" (dict "ctx" . "component" "ingest-gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "observex.selectorLabels" (dict "ctx" . "component" "ingest-gateway") | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "7000"
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ingest-gateway
+          image: {{ include "observex.image" (dict "Values" .Values "component" "ingest-gateway") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - { name: otlp-http, containerPort: 4318 }
+            - { name: http,      containerPort: 7000 }
+          env:
+            - name: OBSERVE_X_WAL_PATH
+              value: /var/lib/observex/wal
+            - name: OBSERVE_X_CLICKHOUSE_ADDR
+              value: {{ .Values.clickhouse.addr | quote }}
+            - name: OBSERVE_X_CLICKHOUSE_DB
+              value: {{ .Values.clickhouse.database | quote }}
+            - name: OBSERVE_X_ALERT_MANAGER_URL
+              value: http://{{ include "observex.fullname" . }}-alert-manager:7700
+            {{- include "observex.commonEnv" . | nindent 12 }}
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.ingestGateway.resources | nindent 12 }}
+          volumeMounts:
+            - { name: wal, mountPath: /var/lib/observex/wal }
+      volumes:
+        - name: wal
+          {{- if .Values.ingestGateway.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "observex.fullname" . }}-ingest-gateway-wal
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "observex.fullname" . }}-ingest-gateway
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "observex.selectorLabels" (dict "ctx" . "component" "ingest-gateway") | nindent 4 }}
+  ports:
+    - { name: otlp-http, port: 4318, targetPort: otlp-http }
+    - { name: http,      port: 7000, targetPort: http }
+{{- if .Values.ingestGateway.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "observex.fullname" . }}-ingest-gateway-wal
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- if .Values.ingestGateway.persistence.storageClass }}
+  storageClassName: {{ .Values.ingestGateway.persistence.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.ingestGateway.persistence.size | quote }}
+{{- end }}
+{{- if .Values.global.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "observex.fullname" . }}-ingest-gateway
+  {{- if .Values.global.serviceMonitor.namespace }}
+  namespace: {{ .Values.global.serviceMonitor.namespace }}
+  {{- end }}
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "observex.selectorLabels" (dict "ctx" . "component" "ingest-gateway") | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.global.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.global.serviceMonitor.scrapeTimeout }}
+{{- end }}
+{{- end }}

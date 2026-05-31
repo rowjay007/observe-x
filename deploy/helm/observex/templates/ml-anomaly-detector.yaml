@@ -1,0 +1,55 @@
+{{- if .Values.mlAnomalyDetector.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "observex.fullname" . }}-ml-anomaly-detector
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ml-anomaly-detector
+spec:
+  replicas: {{ .Values.mlAnomalyDetector.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "observex.selectorLabels" (dict "ctx" . "component" "ml-anomaly-detector") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "observex.selectorLabels" (dict "ctx" . "component" "ml-anomaly-detector") | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ml-anomaly-detector
+          image: {{ include "observex.image" (dict "Values" .Values "component" "ml-anomaly-detector") }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - { name: http, containerPort: 7200 }
+          env:
+            {{- if .Values.selfObservability.enabled }}
+            - name: OBSERVE_X_OTLP_ENDPOINT
+              value: {{ .Values.selfObservability.endpoint | quote }}
+            - name: OBSERVE_X_OTLP_SAMPLING
+              value: {{ .Values.selfObservability.samplingFraction | quote }}
+            - name: OBSERVE_X_OTLP_INSECURE
+              value: {{ .Values.selfObservability.insecure | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /ready, port: http }
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+          resources:
+            {{- toYaml .Values.mlAnomalyDetector.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "observex.fullname" . }}-ml-anomaly-detector
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "observex.selectorLabels" (dict "ctx" . "component" "ml-anomaly-detector") | nindent 4 }}
+  ports:
+    - { name: http, port: 7200, targetPort: http }
+{{- end }}
