@@ -4,12 +4,12 @@
 //
 // Phase D-8 (ADR-0025). The flow:
 //
-//   1. Caller hands us a query plan (or a raw SELECT).
-//   2. We stream the rows through the same Arrow record builders
-//      that pkg/.../executor/arrow.go uses, then write a Parquet
-//      file (Snappy compression, 64K row groups) to an io.Writer.
-//   3. For S3, the caller wraps with the AWS SDK's s3manager
-//      uploader; for tests/local, an os.File is fine.
+//  1. Caller hands us a query plan (or a raw SELECT).
+//  2. We stream the rows through the same Arrow record builders
+//     that pkg/.../executor/arrow.go uses, then write a Parquet
+//     file (Snappy compression, 64K row groups) to an io.Writer.
+//  3. For S3, the caller wraps with the AWS SDK's s3manager
+//     uploader; for tests/local, an os.File is fine.
 //
 // We deliberately don't bake S3 in here — the package returns
 // bytes/writes to an io.Writer so the orchestration (which bucket,
@@ -93,7 +93,7 @@ func Write(ctx context.Context, src RowSource, w io.Writer, opts Options) (int64
 	if err != nil {
 		return 0, fmt.Errorf("parquetexport: writer: %w", err)
 	}
-	defer pw.Close()
+	defer func() { _ = pw.Close() }()
 
 	var totalRows int64
 	var rowsInRG int64
@@ -120,7 +120,7 @@ func Write(ctx context.Context, src RowSource, w io.Writer, opts Options) (int64
 				a.Release()
 			}
 		}()
-		rec := array.NewRecord(schema, arrays, rowsInRG)
+		rec := array.NewRecordBatch(schema, arrays, rowsInRG)
 		defer rec.Release()
 		if err := pw.WriteBuffered(rec); err != nil {
 			return fmt.Errorf("parquetexport: write rg: %w", err)

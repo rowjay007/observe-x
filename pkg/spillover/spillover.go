@@ -11,12 +11,12 @@
 // network blip, redeploy gap). NATS JetStream is the cheapest
 // durable buffer we can lean on without inventing one:
 //
-//   * Publishers (the supervisor's RouteToTenant) write to a
+//   - Publishers (the supervisor's RouteToTenant) write to a
 //     per-tenant subject when the mailbox is full.
-//   * Consumers (the same supervisor process, on a separate
+//   - Consumers (the same supervisor process, on a separate
 //     goroutine) pull from JetStream and re-route into the
 //     mailbox at the rate it can accept.
-//   * If JetStream itself is unavailable, the spillover degrades
+//   - If JetStream itself is unavailable, the spillover degrades
 //     to the legacy drop-on-full behaviour — the supervisor keeps
 //     running; this package's failure mode is never fatal.
 //
@@ -66,10 +66,10 @@ type Spillover struct {
 	js     jetstream.JetStream
 	stream jetstream.Stream
 
-	publishOK   atomic.Int64
-	publishErr  atomic.Int64
-	consumeOK   atomic.Int64
-	consumeErr  atomic.Int64
+	publishOK  atomic.Int64
+	publishErr atomic.Int64
+	consumeOK  atomic.Int64
+	consumeErr atomic.Int64
 
 	closeOnce sync.Once
 }

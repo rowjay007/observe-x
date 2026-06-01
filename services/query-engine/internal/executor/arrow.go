@@ -82,11 +82,11 @@ func (e *Executor) ExecuteArrow(ctx context.Context, plan *observeql.Plan, w io.
 		}
 		releaseBuilders(builders)
 	}()
-	rec := array.NewRecord(schema, arrays, int64(len(rows)))
+	rec := array.NewRecordBatch(schema, arrays, int64(len(rows)))
 	defer rec.Release()
 
 	writer := ipc.NewWriter(w, ipc.WithSchema(schema), ipc.WithAllocator(pool))
-	defer writer.Close()
+	defer func() { _ = writer.Close() }()
 	// Plan metadata as a schema-level annotation. Clients that don't
 	// care can ignore it; Polars surfaces it in the schema object.
 	if err := writer.Write(rec); err != nil {

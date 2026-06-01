@@ -7,14 +7,14 @@
 //
 // Design choice — minute buckets, configurable window:
 //
-//   Each service tracks counts in N×1-minute buckets that form a
-//   ring. The "rate" at any instant is the sum across all live
-//   buckets divided by their span in seconds. That's O(N) per
-//   evaluation with N≤window/bucketSize; at default 5-minute window
-//   it's 5 adds. The rule fires on threshold-crossing edges (not on
-//   every signal above threshold) to avoid alert storms; once an
-//   event has fired for (tenant, service), no new event fires until
-//   the rate dips below threshold first.
+//	Each service tracks counts in N×1-minute buckets that form a
+//	ring. The "rate" at any instant is the sum across all live
+//	buckets divided by their span in seconds. That's O(N) per
+//	evaluation with N≤window/bucketSize; at default 5-minute window
+//	it's 5 adds. The rule fires on threshold-crossing edges (not on
+//	every signal above threshold) to avoid alert storms; once an
+//	event has fired for (tenant, service), no new event fires until
+//	the rate dips below threshold first.
 package cep
 
 import (
@@ -114,10 +114,10 @@ type HighErrorRateRule struct {
 	window    time.Duration
 	threshold float64
 
-	mu       sync.Mutex
-	totals   map[string]*slidingWindow
-	errors   map[string]*slidingWindow
-	firing   map[string]bool
+	mu     sync.Mutex
+	totals map[string]*slidingWindow
+	errors map[string]*slidingWindow
+	firing map[string]bool
 }
 
 func NewHighErrorRateRule(tenantID string, window time.Duration, thresholdEPS float64) *HighErrorRateRule {
@@ -173,11 +173,11 @@ func (r *HighErrorRateRule) Evaluate(sig signal.Signal) *Event {
 				TenantID:  r.tenantID,
 				Timestamp: now,
 				Data: map[string]any{
-					"service":    service,
-					"error_rate": errRate,
+					"service":     service,
+					"error_rate":  errRate,
 					"error_ratio": errorRatio,
-					"total_rate": totalRate,
-					"window":     r.window.String(),
+					"total_rate":  totalRate,
+					"window":      r.window.String(),
 				},
 			}
 		}

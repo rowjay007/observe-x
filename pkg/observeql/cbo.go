@@ -9,12 +9,12 @@
 //
 // This file ships:
 //
-//   * Statistics interface — pluggable table cardinality + column
+//   - Statistics interface — pluggable table cardinality + column
 //     NDV (number of distinct values). The default impl reads
 //     ClickHouse system.parts; tests inject a mock.
-//   * CostModel — assigns a numeric cost to a physical plan. The
+//   - CostModel — assigns a numeric cost to a physical plan. The
 //     numbers are normalised "rows scanned"; smaller is better.
-//   * EnumeratePlans — for now, returns a single plan equivalent
+//   - EnumeratePlans — for now, returns a single plan equivalent
 //     to the rule-based output, plus reordered-join variants. The
 //     plumbing is in place so future passes (predicate pushdown,
 //     CTE materialisation) drop in as extra candidate generators.
@@ -60,13 +60,13 @@ func (c CostModel) Cost(pp *PhysicalPlan) float64 {
 // PhysicalPlan is the CBO's lowered form. The SQL field is what the
 // executor ultimately runs.
 type PhysicalPlan struct {
-	SQL           string
-	Params        []any
-	RowsScanned   int64
-	RowsShuffled  int64
-	JoinOrder     []string // table names in scan order
-	GeneratedAt   time.Time
-	Variant       string // human label, e.g. "rule-based", "join-reordered:tA,tB,tC"
+	SQL          string
+	Params       []any
+	RowsScanned  int64
+	RowsShuffled int64
+	JoinOrder    []string // table names in scan order
+	GeneratedAt  time.Time
+	Variant      string // human label, e.g. "rule-based", "join-reordered:tA,tB,tC"
 }
 
 // EnumeratePlans returns candidate physical plans for an AST.

@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/zeebo/blake3"
 	"io"
 	"net/http"
 	"os"
@@ -14,6 +13,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/zeebo/blake3"
 )
 
 const (

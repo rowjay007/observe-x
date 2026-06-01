@@ -32,7 +32,8 @@ var SignalsReceived = promauto.NewCounterVec(prometheus.CounterOpts{
 
 // SignalsDropped counts signals that were rejected, sampled out, or
 // failed at some stage. The `reason` label is one of:
-//   overload, no_tenant, decode, actor_full, sampled_out, wal_error.
+//
+//	overload, no_tenant, decode, actor_full, sampled_out, wal_error.
 var SignalsDropped = promauto.NewCounterVec(prometheus.CounterOpts{
 	Namespace: "observex",
 	Subsystem: "ingest",

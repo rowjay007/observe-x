@@ -46,8 +46,8 @@ import (
 type Sample struct {
 	TenantID string
 	Metric   string
-	Value    float64    // legacy single-feature input; mirrored to Features[0] on the wire
-	Features []float64  // optional multi-feature input; nil ⇒ use [Value]
+	Value    float64   // legacy single-feature input; mirrored to Features[0] on the wire
+	Features []float64 // optional multi-feature input; nil ⇒ use [Value]
 	At       time.Time
 }
 

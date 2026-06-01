@@ -77,8 +77,8 @@ type notifierFn struct {
 	send func(ctx context.Context, n Notification) error
 }
 
-func (n notifierFn) Name() string                                       { return n.name }
-func (n notifierFn) Send(ctx context.Context, x Notification) error     { return n.send(ctx, x) }
+func (n notifierFn) Name() string                                   { return n.name }
+func (n notifierFn) Send(ctx context.Context, x Notification) error { return n.send(ctx, x) }
 
 // ─── Slack ────────────────────────────────────────────────────────────────
 

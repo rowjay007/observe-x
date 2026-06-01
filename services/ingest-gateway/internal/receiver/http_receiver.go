@@ -2,13 +2,12 @@ package receiver
 
 import (
 	"encoding/json"
-	"github.com/rowjay007/observe-x/pkg/signal"
 	"net/http"
-	"sync"
+
+	"github.com/rowjay007/observe-x/pkg/signal"
 )
 
 type HTTPReceiver struct {
-	mu         sync.Mutex
 	signalChan chan<- signal.Signal
 }
 
@@ -47,7 +46,7 @@ func (r *HTTPReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	case r.signalChan <- sig:
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
-		json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "accepted"})
 	case <-req.Context().Done():
 		http.Error(w, "request cancelled", http.StatusRequestTimeout)
 	default:

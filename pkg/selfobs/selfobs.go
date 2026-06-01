@@ -5,17 +5,17 @@
 //
 // Design intent:
 //
-//   * Each service emits its own traces *back into ObserveX*. The
+//   - Each service emits its own traces *back into ObserveX*. The
 //     ingest-gateway's OTLP receiver (Phase B-2) accepts them, the
 //     storage backend persists them, the query-engine surfaces them.
 //     This closes the dogfood loop: we instrument our platform with
 //     our platform.
 //
-//   * The default sampling fraction is 0.10 — high enough to catch
+//   - The default sampling fraction is 0.10 — high enough to catch
 //     production issues, low enough to keep self-instrumentation
 //     overhead under 5% in the steady state.
 //
-//   * If OBSERVE_X_OTLP_ENDPOINT is unset, Init returns a no-op
+//   - If OBSERVE_X_OTLP_ENDPOINT is unset, Init returns a no-op
 //     TracerProvider. We never crash a service for missing
 //     observability config.
 package selfobs
@@ -42,15 +42,15 @@ import (
 // only ServiceName; everything else has sensible defaults that the
 // env-driven InitFromEnv constructor wires up.
 type Config struct {
-	ServiceName       string
-	ServiceVersion    string
-	Endpoint          string  // e.g. "http://ingest-gateway:7000"
-	APIKey            string  // tenant API key used as Bearer token
-	TenantID          string  // X-Tenant-ID header value
-	SamplingFraction  float64 // [0,1]; 0 → never sample, 1 → always
-	ExportTimeout     time.Duration
-	BatchSize         int
-	Insecure          bool // skip TLS, http:// rather than https://
+	ServiceName      string
+	ServiceVersion   string
+	Endpoint         string  // e.g. "http://ingest-gateway:7000"
+	APIKey           string  // tenant API key used as Bearer token
+	TenantID         string  // X-Tenant-ID header value
+	SamplingFraction float64 // [0,1]; 0 → never sample, 1 → always
+	ExportTimeout    time.Duration
+	BatchSize        int
+	Insecure         bool // skip TLS, http:// rather than https://
 }
 
 func (c Config) withDefaults() Config {
@@ -168,11 +168,11 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 
 // InitFromEnv reads the standard ObserveX env vars:
 //
-//   OBSERVE_X_OTLP_ENDPOINT          base URL of the ingest-gateway
-//   OBSERVE_X_OTLP_API_KEY           tenant key for the loopback
-//   OBSERVE_X_OTLP_TENANT_ID         tenant ID for the loopback
-//   OBSERVE_X_OTLP_SAMPLING          0..1, default 0.10
-//   OBSERVE_X_OTLP_INSECURE          "1" to skip TLS (dev only)
+//	OBSERVE_X_OTLP_ENDPOINT          base URL of the ingest-gateway
+//	OBSERVE_X_OTLP_API_KEY           tenant key for the loopback
+//	OBSERVE_X_OTLP_TENANT_ID         tenant ID for the loopback
+//	OBSERVE_X_OTLP_SAMPLING          0..1, default 0.10
+//	OBSERVE_X_OTLP_INSECURE          "1" to skip TLS (dev only)
 //
 // serviceName/serviceVersion come from the caller (each service
 // passes its own ldflags-injected values).

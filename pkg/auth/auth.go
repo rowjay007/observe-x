@@ -106,9 +106,11 @@ func GenerateAPIKey(secret, tenantID string) string {
 
 func computeKeyHash(secret, tenantID string) string {
 	h := blake3.New()
-	h.Write([]byte(secret))
-	h.Write([]byte(":"))
-	h.Write([]byte(tenantID))
+	// hash.Hash.Write never returns an error per its contract; the
+	// _, _ binding makes that explicit for errcheck.
+	_, _ = h.Write([]byte(secret))
+	_, _ = h.Write([]byte(":"))
+	_, _ = h.Write([]byte(tenantID))
 	return hex.EncodeToString(h.Sum(nil))
 }
 

@@ -34,8 +34,8 @@ import (
 	"github.com/rowjay007/observe-x/pkg/auth"
 	"github.com/rowjay007/observe-x/pkg/observability"
 	"github.com/rowjay007/observe-x/pkg/observeql"
-	"github.com/rowjay007/observe-x/pkg/selfobs"
 	"github.com/rowjay007/observe-x/pkg/parquetexport"
+	"github.com/rowjay007/observe-x/pkg/selfobs"
 	chstorage "github.com/rowjay007/observe-x/pkg/storage/clickhouse"
 	"github.com/rowjay007/observe-x/services/query-engine/internal/executor"
 )
@@ -152,9 +152,9 @@ func ginAuth(mw *auth.AuthMiddleware) gin.HandlerFunc {
 // ─── Query handler ───────────────────────────────────────────────────────
 
 type queryReq struct {
-	Query        string `json:"query"`
-	MaxRows      int    `json:"max_rows,omitempty"`
-	TimeoutSecs  int    `json:"timeout_secs,omitempty"`
+	Query       string `json:"query"`
+	MaxRows     int    `json:"max_rows,omitempty"`
+	TimeoutSecs int    `json:"timeout_secs,omitempty"`
 }
 
 func queryHandler(exec *executor.Executor, logger *zap.Logger) gin.HandlerFunc {

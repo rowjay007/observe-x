@@ -4,13 +4,14 @@ import (
 	"context"
 	"testing"
 	"time"
-	"github.com/rowjay007/observe-x/pkg/wal"
+
 	"github.com/rowjay007/observe-x/pkg/signal"
+	"github.com/rowjay007/observe-x/pkg/wal"
 )
 
 func TestWALIntegration(t *testing.T) {
 	tempDir := t.TempDir()
-	
+
 	w, err := wal.NewWAL(tempDir)
 	if err != nil {
 		t.Fatalf("Failed to create WAL: %v", err)

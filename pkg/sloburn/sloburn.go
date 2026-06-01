@@ -8,10 +8,10 @@
 //
 // The standard pairs (used by Google's own production teams) are:
 //
-//   page:    14.4× burn in the last 1h   AND  14.4× burn in the last 5m
-//   page:    6×    burn in the last 6h   AND  6×    burn in the last 30m
-//   ticket:  3×    burn in the last 24h  AND  3×    burn in the last 2h
-//   ticket:  1×    burn in the last 3d   AND  1×    burn in the last 6h
+//	page:    14.4× burn in the last 1h   AND  14.4× burn in the last 5m
+//	page:    6×    burn in the last 6h   AND  6×    burn in the last 30m
+//	ticket:  3×    burn in the last 24h  AND  3×    burn in the last 2h
+//	ticket:  1×    burn in the last 3d   AND  1×    burn in the last 6h
 //
 // The "long" window catches sustained burn; the "short" window
 // catches the early phase of the same burn and ensures the alert
@@ -41,9 +41,9 @@ const (
 // significant: evaluators check from most severe to least so the
 // first match wins.
 type WindowPair struct {
-	Long, Short  time.Duration
-	BurnRate     float64
-	Severity     Severity
+	Long, Short time.Duration
+	BurnRate    float64
+	Severity    Severity
 }
 
 // DefaultWindowPairs returns the SRE Workbook standard pairs.
@@ -86,9 +86,9 @@ func (s SLO) validate() error {
 // concurrent use. Buckets are 1 minute wide; the longest configured
 // window determines retention.
 type Evaluator struct {
-	mu       sync.RWMutex
-	slos     map[string]*sloState
-	bucket   time.Duration
+	mu     sync.RWMutex
+	slos   map[string]*sloState
+	bucket time.Duration
 }
 
 type sloState struct {
@@ -99,9 +99,9 @@ type sloState struct {
 }
 
 type bucket struct {
-	epoch    int64 // minute-floored unix epoch
-	good     int64
-	bad      int64
+	epoch int64 // minute-floored unix epoch
+	good  int64
+	bad   int64
 }
 
 func New() *Evaluator {
@@ -153,7 +153,7 @@ func (e *Evaluator) Observe(sloName string, good bool, at time.Time) error {
 	} else {
 		s.bad = addToBucket(s.bad, epoch, 0, 1)
 	}
-	cutoff := at.Add(-s.maxKeep - time.Minute).UTC().Unix() / int64(e.bucket.Seconds())
+	cutoff := at.Add(-s.maxKeep-time.Minute).UTC().Unix() / int64(e.bucket.Seconds())
 	s.good = trimOlder(s.good, cutoff)
 	s.bad = trimOlder(s.bad, cutoff)
 	return nil
@@ -164,13 +164,13 @@ func (e *Evaluator) Observe(sloName string, good bool, at time.Time) error {
 // Decision is the result of Evaluate. Severity is SevOK if no pair
 // trips, otherwise the highest-severity matched pair is returned.
 type Decision struct {
-	SLO           string
-	Severity      Severity
-	BurnLong      float64
-	BurnShort     float64
-	Pair          WindowPair
-	ErrorBudget   float64
-	EvaluatedAt   time.Time
+	SLO         string
+	Severity    Severity
+	BurnLong    float64
+	BurnShort   float64
+	Pair        WindowPair
+	ErrorBudget float64
+	EvaluatedAt time.Time
 }
 
 // Evaluate walks the SLO's window pairs from highest to lowest

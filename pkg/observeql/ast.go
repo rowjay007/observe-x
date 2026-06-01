@@ -48,8 +48,8 @@ type Query struct {
 }
 
 type SelectClause struct {
-	Star    bool       `parser:"'SELECT' (@'*'"`
-	Columns []*Column  `parser:"| @@ ( ',' @@ )* )"`
+	Star    bool      `parser:"'SELECT' (@'*'"`
+	Columns []*Column `parser:"| @@ ( ',' @@ )* )"`
 }
 
 type Column struct {
@@ -59,8 +59,8 @@ type Column struct {
 }
 
 type FuncCall struct {
-	Name string `parser:"@Ident '('"`
-	Star bool   `parser:"( @'*'"`
+	Name string  `parser:"@Ident '('"`
+	Star bool    `parser:"( @'*'"`
 	Arg  *string `parser:"| @Ident )? ')'"`
 }
 

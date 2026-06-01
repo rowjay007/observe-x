@@ -39,9 +39,9 @@ type onnxPredictor struct {
 // different shape (multi-feature, sliding-window, etc.) need an
 // adapter — out of scope for this slice. The model contract is:
 //
-//   input  shape [1, 1]   dtype float32
-//   output shape [1, K]   dtype float32; OutputIndex picks the
-//                          column treated as the anomaly score.
+//	input  shape [1, 1]   dtype float32
+//	output shape [1, K]   dtype float32; OutputIndex picks the
+//	                       column treated as the anomaly score.
 //
 // Future work: read the contract from the .onnx metadata so
 // off-the-shelf sklearn-onnx exports just work without

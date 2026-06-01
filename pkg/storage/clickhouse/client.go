@@ -159,7 +159,7 @@ func (c *Client) Query(ctx context.Context, query string, args ...any) ([]map[st
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	cols := rows.Columns()
 	out := make([]map[string]any, 0)

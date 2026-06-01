@@ -14,9 +14,10 @@ import (
 // API token); each Service in PD has its own.
 //
 // Severity mapping:
-//   SeverityCritical → "critical" (page on-call now)
-//   SeverityWarning  → "warning"  (page only if escalation rules say so)
-//   SeverityInfo     → "info"     (audit-trail only)
+//
+//	SeverityCritical → "critical" (page on-call now)
+//	SeverityWarning  → "warning"  (page only if escalation rules say so)
+//	SeverityInfo     → "info"     (audit-trail only)
 //
 // Resolved events use action="resolve" with the same dedup_key, which
 // auto-closes the incident in PD.

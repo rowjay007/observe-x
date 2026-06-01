@@ -22,7 +22,7 @@ import (
 // `Flush` interval (or each `FlushAt` record count) produces one
 // NDJSON object under the key pattern:
 //
-//   {prefix}/YYYY/MM/DD/HH/{epoch_ms}-{rand6}.ndjson
+//	{prefix}/YYYY/MM/DD/HH/{epoch_ms}-{rand6}.ndjson
 //
 // When ObjectLockMode + RetainUntil are configured, the object is
 // uploaded with S3 Object Lock so it cannot be deleted or
@@ -31,11 +31,11 @@ import (
 // Object Lock ENABLED (a one-time bucket-creation flag); the
 // exporter does not attempt to enable it on existing buckets.
 type S3Exporter struct {
-	client     *s3.Client
-	bucket     string
-	prefix     string
-	mode       s3types.ObjectLockMode // "" disables lock
-	retainFor  time.Duration
+	client    *s3.Client
+	bucket    string
+	prefix    string
+	mode      s3types.ObjectLockMode // "" disables lock
+	retainFor time.Duration
 
 	flushEvery   time.Duration
 	flushAtCount int
@@ -206,12 +206,12 @@ func (e *S3Exporter) flush(ctx context.Context) error {
 	key := e.objectKey(time.Now())
 
 	put := &s3.PutObjectInput{
-		Bucket:            aws.String(e.bucket),
-		Key:               aws.String(key),
-		Body:              bytes.NewReader(body),
-		ContentType:       aws.String("application/x-ndjson"),
-		ContentEncoding:   aws.String("identity"),
-		ChecksumSHA256:    aws.String(hexToBase64SHA256(checksum)),
+		Bucket:          aws.String(e.bucket),
+		Key:             aws.String(key),
+		Body:            bytes.NewReader(body),
+		ContentType:     aws.String("application/x-ndjson"),
+		ContentEncoding: aws.String("identity"),
+		ChecksumSHA256:  aws.String(hexToBase64SHA256(checksum)),
 		Metadata: map[string]string{
 			"observex-record-count": fmt.Sprintf("%d", len(batch)),
 			"observex-sha256":       hex.EncodeToString(checksum[:]),

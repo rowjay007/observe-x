@@ -13,8 +13,8 @@ import (
 //
 // Implementations:
 //
-//   * InMemoryStore   — default; persists only for the process lifetime.
-//   * RedisStore      — backed by a Redis key (`observex:sampling:state:<tenant>`).
+//   - InMemoryStore   — default; persists only for the process lifetime.
+//   - RedisStore      — backed by a Redis key (`observex:sampling:state:<tenant>`).
 //
 // The store is decoupled from the hot path: the sampler keeps its
 // EWMA in process memory and flushes a snapshot every FlushInterval

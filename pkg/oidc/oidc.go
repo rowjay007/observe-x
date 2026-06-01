@@ -168,10 +168,10 @@ func (v *Validator) Close() {
 
 // Claims is the validated claims surface returned on success.
 type Claims struct {
-	Subject  string    // `sub` — opaque user id from the IdP
-	Email    string    // optional, propagated when present
+	Subject  string // `sub` — opaque user id from the IdP
+	Email    string // optional, propagated when present
 	Issuer   string
-	Groups   []string  // resolved via cfg.GroupClaim
+	Groups   []string // resolved via cfg.GroupClaim
 	IssuedAt time.Time
 	Expires  time.Time
 }
@@ -195,8 +195,8 @@ func (v *Validator) Validate(ctx context.Context, raw string) (Claims, error) {
 	}
 
 	var std jwt.Claims
-	raw_ := map[string]any{}
-	if err := tok.Claims(key, &std, &raw_); err != nil {
+	rawClaims := map[string]any{}
+	if err := tok.Claims(key, &std, &rawClaims); err != nil {
 		return Claims{}, errInvalidToken
 	}
 
@@ -209,7 +209,7 @@ func (v *Validator) Validate(ctx context.Context, raw string) (Claims, error) {
 		return Claims{}, errInvalidToken
 	}
 
-	groups := extractGroups(raw_, v.cfg.GroupClaim)
+	groups := extractGroups(rawClaims, v.cfg.GroupClaim)
 	if len(v.cfg.AdminGroups) > 0 && !overlap(groups, v.cfg.AdminGroups) {
 		return Claims{}, errInsufficientGroup
 	}
@@ -225,7 +225,7 @@ func (v *Validator) Validate(ctx context.Context, raw string) (Claims, error) {
 	if std.Expiry != nil {
 		out.Expires = std.Expiry.Time()
 	}
-	if e, ok := raw_["email"].(string); ok {
+	if e, ok := rawClaims["email"].(string); ok {
 		out.Email = e
 	}
 	return out, nil

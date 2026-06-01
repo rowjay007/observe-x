@@ -7,11 +7,11 @@
 //
 // The four canonical scopes are:
 //
-//   ingest         — write signals to ingest-gateway /v1/{ingest,traces,metrics,logs}
-//   query          — read via query-engine /v1/query
-//   alert.read     — list alerts, silences, SLOs at alert-manager
-//   alert.write    — create silences, fire events, register SLOs
-//   tenant.admin   — operator-level (issue/revoke keys, mutate tenant)
+//	ingest         — write signals to ingest-gateway /v1/{ingest,traces,metrics,logs}
+//	query          — read via query-engine /v1/query
+//	alert.read     — list alerts, silences, SLOs at alert-manager
+//	alert.write    — create silences, fire events, register SLOs
+//	tenant.admin   — operator-level (issue/revoke keys, mutate tenant)
 //
 // Scopes compose: a key with [ingest, query] can do both. A key with
 // just [ingest] receives 403 on /v1/query, with WWW-Authenticate

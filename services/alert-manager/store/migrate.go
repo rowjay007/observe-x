@@ -1,8 +1,9 @@
 // Package store is the alert-manager's persistence layer over
 // PostgreSQL. It uses the same embedded-migration pattern as
-// tenant-api: SQL files live next to the Go code, are embedded with
-// go:embed at build time, and applied transactionally in lexical
-// order at startup.
+// tenant-api: SQL files live next to the Go code, are embedded at
+// build time via the go:embed directive (note: no space before
+// "go:embed" or the Go toolchain treats it as an inert comment),
+// and applied transactionally in lexical order at startup.
 package store
 
 import (

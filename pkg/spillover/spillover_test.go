@@ -1,6 +1,7 @@
 package spillover
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -8,8 +9,9 @@ import (
 )
 
 func TestNewDisabledWhenURLEmpty(t *testing.T) {
+	ctx := context.Background()
 	// No URL ⇒ nil + nil. Caller treats nil as "spillover off."
-	s, err := New(nil, Options{})
+	s, err := New(ctx, Options{})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -17,7 +19,7 @@ func TestNewDisabledWhenURLEmpty(t *testing.T) {
 		t.Fatal("expected nil when disabled")
 	}
 	// Methods are safe on nil and return useful errors.
-	if err := s.Push(nil, "acme", signal.Signal{}); err == nil {
+	if err := s.Push(ctx, "acme", signal.Signal{}); err == nil {
 		t.Error("Push on nil should error")
 	}
 	if got := s.Stats(); got != (Stats{}) {
@@ -28,20 +30,17 @@ func TestNewDisabledWhenURLEmpty(t *testing.T) {
 
 func TestSanitiseAllowsExpectedCharset(t *testing.T) {
 	cases := map[string]string{
-		"acme":         "acme",
-		"acme-1":       "acme-1",
-		"acme.bad":     "acme_bad",
-		"acme>evil":    "acme_evil",
-		"acme*wild":    "acme_wild",
-		"":             "anon",
-		"中文":           "____", // two 3-byte runes ⇒ six underscores
-		"ABC_def-123":  "ABC_def-123",
+		"acme":        "acme",
+		"acme-1":      "acme-1",
+		"acme.bad":    "acme_bad",
+		"acme>evil":   "acme_evil",
+		"acme*wild":   "acme_wild",
+		"":            "anon",
+		"中文":          "____", // two 3-byte runes ⇒ six underscores
+		"ABC_def-123": "ABC_def-123",
 	}
 	for in, want := range cases {
 		got := sanitise(in)
-		if !strings.HasPrefix(got, want[:1]) && want != "anon" {
-			// rough check; the empty case asserted below
-		}
 		if in == "" && got != "anon" {
 			t.Errorf("empty: got %q want %q", got, want)
 		}
@@ -66,4 +65,3 @@ func TestStripPrefix(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
-

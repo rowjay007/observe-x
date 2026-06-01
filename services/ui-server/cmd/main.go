@@ -45,9 +45,9 @@ import (
 var assetsFS embed.FS
 
 type config struct {
-	Addr           string
-	TenantAPIURL   string
-	QueryEngineURL string
+	Addr            string
+	TenantAPIURL    string
+	QueryEngineURL  string
 	AlertManagerURL string
 
 	OIDCIssuer      string
@@ -239,9 +239,9 @@ func remoteIP(r *http.Request) string {
 
 func loadConfig() config {
 	return config{
-		Addr:           getEnv("OBSERVE_X_UI_ADDR", ":8080"),
-		TenantAPIURL:   getEnv("OBSERVE_X_TENANT_API_URL", "http://tenant-api:8081"),
-		QueryEngineURL: getEnv("OBSERVE_X_QUERY_ENGINE_URL", "http://query-engine:8082"),
+		Addr:            getEnv("OBSERVE_X_UI_ADDR", ":8080"),
+		TenantAPIURL:    getEnv("OBSERVE_X_TENANT_API_URL", "http://tenant-api:8081"),
+		QueryEngineURL:  getEnv("OBSERVE_X_QUERY_ENGINE_URL", "http://query-engine:8082"),
 		AlertManagerURL: getEnv("OBSERVE_X_ALERT_MANAGER_URL", "http://alert-manager:8083"),
 
 		OIDCIssuer:      os.Getenv("OBSERVE_X_OIDC_ISSUER"),
@@ -295,12 +295,12 @@ func buildConfigJSON(ctx context.Context, cfg *config) ([]byte, error) {
 		}
 	}
 	return json.Marshal(map[string]any{
-		"version":             "1.0.0",
-		"oidc_issuer":         cfg.OIDCIssuer,
-		"oidc_audience":       cfg.OIDCAudience,
-		"oidc_client_id":      cfg.OIDCClientID,
-		"authorize_endpoint":  authz,
-		"token_endpoint":      token,
+		"version":            "1.0.0",
+		"oidc_issuer":        cfg.OIDCIssuer,
+		"oidc_audience":      cfg.OIDCAudience,
+		"oidc_client_id":     cfg.OIDCClientID,
+		"authorize_endpoint": authz,
+		"token_endpoint":     token,
 	})
 }
 

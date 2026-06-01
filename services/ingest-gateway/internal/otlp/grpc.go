@@ -23,7 +23,6 @@ package otlp
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"time"
 
@@ -207,8 +206,3 @@ func bearerFromMetadata(md metadata.MD) string {
 	}
 	return ""
 }
-
-// errUnimplemented is here so callers that import this file from a
-// constructed server without registering services get a useful error
-// in their tests. Unused at runtime.
-var errUnimplemented = errors.New("otlp: gRPC services not registered")

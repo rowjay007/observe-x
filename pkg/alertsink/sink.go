@@ -5,13 +5,13 @@
 //
 // Design:
 //
-//   * Publish() is non-blocking. If the buffer is full, the event is
+//   - Publish() is non-blocking. If the buffer is full, the event is
 //     dropped and a counter is incremented — observability over
 //     correctness here, because the same CEP event will fire again
 //     on the next signal that crosses the threshold edge.
-//   * A worker goroutine drains the buffer and POSTs to
+//   - A worker goroutine drains the buffer and POSTs to
 //     {alert-manager}/v1/events with the tenant's API key.
-//   * Failed POSTs are retried with exponential backoff (max 3 tries
+//   - Failed POSTs are retried with exponential backoff (max 3 tries
 //     per event); after that the event is dropped + counter bumped.
 //
 // In tests, the InMemorySink swap point keeps everything synchronous.

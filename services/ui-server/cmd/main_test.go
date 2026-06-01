@@ -24,11 +24,11 @@ func TestEmbeddedSPALoads(t *testing.T) {
 		path   string
 		expect string
 	}{
-		{"/", "ObserveX"},                // index.html
-		{"/index.html", "ObserveX"},      //
-		{"/app.css", ":root"},            // CSS variables block
-		{"/app.js", "ObserveX"},          // app comment
-		{"/does-not-exist", "ObserveX"},  // SPA fallback to index
+		{"/", "ObserveX"},               // index.html
+		{"/index.html", "ObserveX"},     //
+		{"/app.css", ":root"},           // CSS variables block
+		{"/app.js", "ObserveX"},         // app comment
+		{"/does-not-exist", "ObserveX"}, // SPA fallback to index
 	}
 	for _, c := range cases {
 		r, err := http.Get(srv.URL + c.path)

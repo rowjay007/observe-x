@@ -115,9 +115,9 @@ func Apply(ctx context.Context, conn driver.Conn, spec Spec) error {
 	}
 
 	type row struct {
-		table    string
-		col      string
-		hotDays  int
+		table     string
+		col       string
+		hotDays   int
 		totalDays int
 	}
 	rows := []row{
@@ -165,10 +165,10 @@ func Drop(ctx context.Context, conn driver.Conn, tenantID string) error {
 	// no-op WHERE. The cleanest path is the same MODIFY TTL with
 	// the table-default windows, scoped to this tenant.
 	defaults := Spec{
-		TenantID:         tenantID,
-		MetricsHotDays:   30, MetricsTotalDays: 90,
-		LogsHotDays:      14, LogsTotalDays:    30,
-		TracesHotDays:    7,  TracesTotalDays:  30,
+		TenantID:       tenantID,
+		MetricsHotDays: 30, MetricsTotalDays: 90,
+		LogsHotDays: 14, LogsTotalDays: 30,
+		TracesHotDays: 7, TracesTotalDays: 30,
 	}
 	return Apply(ctx, conn, defaults)
 }

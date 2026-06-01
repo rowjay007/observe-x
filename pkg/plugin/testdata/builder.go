@@ -7,9 +7,9 @@
 //   - alloc(size i32) -> i32      bump allocator from offset 4096
 //   - free(ptr i32, len i32) -> () no-op
 //   - enrich_signal(inPtr, inLen i32) -> i64
-//        returns the packed (out_ptr=0, out_len=N) where the
-//        output JSON `{"enriched":true,"source":"wasm-test"}` lives
-//        in a data segment at offset 0.
+//     returns the packed (out_ptr=0, out_len=N) where the
+//     output JSON `{"enriched":true,"source":"wasm-test"}` lives
+//     in a data segment at offset 0.
 package testdata
 
 import (
@@ -48,9 +48,9 @@ func BuildEnricherPlugin() []byte {
 
 	// ── Section 6: Globals (mut i32 = 4096) ──
 	writeSection(&b, 0x06, []byte{
-		0x01,                         // count
-		0x7f, 0x01,                   // i32 mut
-		0x41, 0x80, 0x20, 0x0b,       // i32.const 4096, end (LEB128: 4096 = 0x80 0x20)
+		0x01,       // count
+		0x7f, 0x01, // i32 mut
+		0x41, 0x80, 0x20, 0x0b, // i32.const 4096, end (LEB128: 4096 = 0x80 0x20)
 	})
 
 	// ── Section 7: Exports ──
@@ -66,15 +66,15 @@ func BuildEnricherPlugin() []byte {
 	// ── Section 10: Code ──
 	// alloc body
 	allocBody := []byte{
-		0x01, 0x01, 0x7f,             // 1 local group: 1 i32 (the $ptr)
-		0x23, 0x00,                   // global.get 0
-		0x21, 0x01,                   // local.set 1 ($ptr)
-		0x23, 0x00,                   // global.get 0
-		0x20, 0x00,                   // local.get 0 ($size)
-		0x6a,                         // i32.add
-		0x24, 0x00,                   // global.set 0
-		0x20, 0x01,                   // local.get 1
-		0x0b,                         // end
+		0x01, 0x01, 0x7f, // 1 local group: 1 i32 (the $ptr)
+		0x23, 0x00, // global.get 0
+		0x21, 0x01, // local.set 1 ($ptr)
+		0x23, 0x00, // global.get 0
+		0x20, 0x00, // local.get 0 ($size)
+		0x6a,       // i32.add
+		0x24, 0x00, // global.set 0
+		0x20, 0x01, // local.get 1
+		0x0b, // end
 	}
 	// free body: just end
 	freeBody := []byte{0x00, 0x0b}
@@ -91,9 +91,9 @@ func BuildEnricherPlugin() []byte {
 
 	// ── Section 11: Data ──
 	dataSeg := concat(
-		[]byte{0x01},                 // count
-		[]byte{0x00},                 // segment type 0 (active, mem 0)
-		[]byte{0x41, 0x00, 0x0b},     // offset = i32.const 0, end
+		[]byte{0x01},             // count
+		[]byte{0x00},             // segment type 0 (active, mem 0)
+		[]byte{0x41, 0x00, 0x0b}, // offset = i32.const 0, end
 		encodeULEB128(uint64(outLen)),
 		[]byte(output),
 	)

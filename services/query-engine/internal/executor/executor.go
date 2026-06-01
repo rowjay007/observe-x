@@ -87,7 +87,7 @@ func (e *Executor) Execute(ctx context.Context, plan *observeql.Plan, w io.Write
 
 	// Trailer with timing for client-side instrumentation.
 	_ = enc.Encode(map[string]any{
-		"_kind":        "trailer",
+		"_kind":         "trailer",
 		"rows_returned": rowsWritten,
 		"duration_ms":   time.Since(start).Milliseconds(),
 	})

@@ -111,12 +111,11 @@ type Backend struct {
 	opts   Options
 	client *Client
 
-	mu      sync.Mutex
-	buffer  []signal.Signal
-	closed  bool
-	stopCh  chan struct{}
-	doneCh  chan struct{}
-	flushed sync.WaitGroup
+	mu     sync.Mutex
+	buffer []signal.Signal
+	closed bool
+	stopCh chan struct{}
+	doneCh chan struct{}
 }
 
 // NewBackend constructs a Backend. If ClickHouse is unreachable at

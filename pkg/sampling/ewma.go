@@ -47,7 +47,7 @@ func (t *ewmaTracker) observe(key string, x float64) {
 	}
 	diff := x - prev
 	t.mean[key] = prev + t.alpha*diff
-	t.vari[key] = (1-t.alpha)*(t.vari[key] + t.alpha*diff*diff)
+	t.vari[key] = (1 - t.alpha) * (t.vari[key] + t.alpha*diff*diff)
 	t.seen[key]++
 }
 

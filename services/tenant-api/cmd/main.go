@@ -17,7 +17,6 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -178,7 +177,6 @@ type server struct {
 	keyStore   *auth.PostgresKeyStore
 	auditExp   auditlog.Exporter
 	chConn     driver.Conn // nil ⇒ retention endpoint returns 501
-	once       sync.Once
 }
 
 func (s *server) router() http.Handler {

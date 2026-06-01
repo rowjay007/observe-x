@@ -1,0 +1,33 @@
+# Dependabot configuration.
+#
+# We are NOT taking automated dependency PRs at this time. The
+# project pins versions deliberately (see go.mod + ADR rationale)
+# and a Dependabot bump on, say, github.com/apache/arrow-go would
+# break the Parquet/Arrow codec in non-obvious ways.
+#
+# Setting `open-pull-requests-limit: 0` keeps the dependency graph
+# populated (so the Security tab still surfaces vulnerabilities)
+# but stops Dependabot from opening update PRs. To re-enable, raise
+# the limit on the ecosystem you want, e.g. to 5.
+#
+# Reference: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#open-pull-requests-limit
+
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: docker
+    directory: "/build/docker"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0

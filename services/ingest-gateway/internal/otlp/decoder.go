@@ -53,7 +53,7 @@ var ErrBodyTooLarge = errors.New("otlp: request body exceeds limit")
 func ReadBody(r io.Reader, contentEncoding string) ([]byte, error) {
 	limited := io.LimitReader(r, MaxRequestBytes+1)
 
-	var src io.Reader = limited
+	src := io.Reader(limited)
 	if contentEncoding == "gzip" {
 		zr, err := gzip.NewReader(limited)
 		if err != nil {

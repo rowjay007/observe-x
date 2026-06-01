@@ -41,10 +41,10 @@ import (
 // lossless against the existing Postgres `tenant_audit_log` row so
 // the export pipeline can do a pure copy.
 type Record struct {
-	ID         string         `json:"id"`           // ULID or BIGSERIAL string
+	ID         string         `json:"id"` // ULID or BIGSERIAL string
 	TenantID   string         `json:"tenant_id,omitempty"`
-	Actor      string         `json:"actor"`        // 'admin', 'system', tenant id
-	Action     string         `json:"action"`       // dotted, e.g. 'api_key.issue'
+	Actor      string         `json:"actor"`  // 'admin', 'system', tenant id
+	Action     string         `json:"action"` // dotted, e.g. 'api_key.issue'
 	Details    map[string]any `json:"details,omitempty"`
 	SourceIP   string         `json:"source_ip,omitempty"`
 	OccurredAt time.Time      `json:"occurred_at"`

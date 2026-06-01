@@ -169,7 +169,7 @@ func scrapeOnce(ctx context.Context, conn clickhouse.Conn, db string, logger *za
 		logger.Warn("system.parts scrape", zap.Error(err))
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	// Snapshot first, then reset + apply so the gauges stay consistent.
 	type row struct {

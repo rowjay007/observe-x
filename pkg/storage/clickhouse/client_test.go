@@ -1,6 +1,7 @@
 package clickhouse
 
 import (
+	"context"
 	"reflect"
 	"testing"
 )
@@ -52,11 +53,12 @@ func TestOptionsDefaults(t *testing.T) {
 
 func TestBackendNilSafe(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
 	var b *Backend
-	if err := b.Write(nil, nil); err != nil {
+	if err := b.Write(ctx, nil); err != nil {
 		t.Errorf("nil backend Write should be no-op, got %v", err)
 	}
-	if err := b.Flush(nil); err != nil {
+	if err := b.Flush(ctx); err != nil {
 		t.Errorf("nil backend Flush should be no-op, got %v", err)
 	}
 	if err := b.Close(); err != nil {

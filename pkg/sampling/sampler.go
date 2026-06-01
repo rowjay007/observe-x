@@ -238,7 +238,7 @@ func (s *AdaptiveSampler) Decide(sig signal.Signal) SampleDecision {
 	}
 
 	score := s.Score(sig)
-	traceID, _ := sig.Attributes["trace_id"]
+	traceID := sig.Attributes["trace_id"]
 	if traceID == "" {
 		return Keep
 	}

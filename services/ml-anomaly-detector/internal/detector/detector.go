@@ -48,14 +48,14 @@ func (o Options) withDefaults() Options {
 type Detector struct {
 	opts Options
 
-	mu     sync.RWMutex
-	stats  map[string]*serieStats // key = tenant + "::" + metric
+	mu    sync.RWMutex
+	stats map[string]*serieStats // key = tenant + "::" + metric
 }
 
 type serieStats struct {
-	mean     float64
-	vari     float64
-	count    uint64
+	mean  float64
+	vari  float64
+	count uint64
 }
 
 func New(opts Options) *Detector {

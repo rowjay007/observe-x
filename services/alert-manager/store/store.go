@@ -83,7 +83,8 @@ func (s *Store) UpsertFiring(ctx context.Context, a Alert) (newTransition bool, 
 			return err
 		}
 
-		if existingState == "" {
+		switch existingState {
+		case "":
 			_, err = tx.Exec(ctx, `
                 INSERT INTO alerts
                   (fingerprint, tenant_id, rule_id, severity, title, description,
@@ -95,7 +96,7 @@ func (s *Store) UpsertFiring(ctx context.Context, a Alert) (newTransition bool, 
 				return err
 			}
 			newTransition = true
-		} else if existingState == "resolved" {
+		case "resolved":
 			_, err = tx.Exec(ctx, `
                 UPDATE alerts
                    SET state='firing', severity=$2, title=$3, description=$4,
@@ -108,7 +109,7 @@ func (s *Store) UpsertFiring(ctx context.Context, a Alert) (newTransition bool, 
 				return err
 			}
 			newTransition = true
-		} else {
+		default:
 			_, err = tx.Exec(ctx, `
                 UPDATE alerts SET last_seen_at=$2 WHERE fingerprint=$1`,
 				a.Fingerprint, a.LastSeenAt)

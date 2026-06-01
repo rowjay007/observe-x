@@ -5,12 +5,12 @@
 //
 // Phase D-10 ships:
 //
-//   * Backend interface — Execute(plan) returns rows. Both
+//   - Backend interface — Execute(plan) returns rows. Both
 //     "clickhouse" and "duckdb-s3" implement it; the federator
 //     dispatches per-source based on the plan's source label.
-//   * Router — picks the backend, optionally fans out to many,
+//   - Router — picks the backend, optionally fans out to many,
 //     and merges (UNION ALL semantics with stable ordering).
-//   * DuckDBBackend — a thin shim that, when the duckdb build
+//   - DuckDBBackend — a thin shim that, when the duckdb build
 //     tag is enabled, opens an in-process DuckDB connection and
 //     issues `SELECT … FROM read_parquet('s3://…')` queries.
 //     The default build returns ErrUnsupported.

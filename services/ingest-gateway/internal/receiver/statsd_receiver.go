@@ -129,7 +129,7 @@ func (r *StatsDReceiver) Stop() {
 		r.cancelFunc()
 	}
 	if r.conn != nil {
-		r.conn.Close()
+		_ = r.conn.Close()
 		r.running = false
 	}
 }

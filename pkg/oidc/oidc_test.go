@@ -178,12 +178,12 @@ func TestValidatorAcceptsGroupClaimOverride(t *testing.T) {
 	defer v.Close()
 
 	tok := idp.sign(t, map[string]any{
-		"iss":                    idp.issuer(),
-		"aud":                    "observex",
-		"sub":                    "x",
-		"exp":                    time.Now().Add(time.Hour).Unix(),
-		"https://my-org/roles":   []string{"sre"},
-		"groups":                 []string{"not-this-one"},
+		"iss":                  idp.issuer(),
+		"aud":                  "observex",
+		"sub":                  "x",
+		"exp":                  time.Now().Add(time.Hour).Unix(),
+		"https://my-org/roles": []string{"sre"},
+		"groups":               []string{"not-this-one"},
 	})
 	if _, err := v.Validate(context.Background(), tok); err != nil {
 		t.Fatalf("expected ok: %v", err)

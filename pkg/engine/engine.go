@@ -207,11 +207,11 @@ type ProcessingEngine struct {
 	signalsDropped  atomic.Int64
 	walWrites       atomic.Int64
 
-	mu      sync.Mutex
-	started bool
+	mu       sync.Mutex
+	started  bool
 	stopOnce sync.Once
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
 }
 
 // NewProcessingEngine constructs an engine with default-tuned options.
@@ -247,10 +247,10 @@ func NewProcessingEngineWithOptions(opts Options) (*ProcessingEngine, error) {
 	}
 
 	return &ProcessingEngine{
-		opts:     opts,
-		wal:      w,
-		storage:  backend,
-		sup:      supervisor.NewSupervisorWithOptions(supervisor.Options{
+		opts:    opts,
+		wal:     w,
+		storage: backend,
+		sup: supervisor.NewSupervisorWithOptions(supervisor.Options{
 			Spillover: opts.Spillover,
 		}),
 		sampler:  sampling.NewAdaptiveSampler(opts.SamplingRate, opts.MaxTraceQueue),
@@ -307,7 +307,7 @@ func (e *ProcessingEngine) Stop() error {
 			cancel()
 		}
 		e.wg.Wait()
-		e.sup.Stop()
+		_ = e.sup.Stop()
 
 		if e.storage != nil {
 			flushCtx, c := context.WithTimeout(context.Background(), 5*time.Second)

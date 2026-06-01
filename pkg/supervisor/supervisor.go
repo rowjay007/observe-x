@@ -3,11 +3,11 @@
 // Phase B-4 replaces the Phase A polling supervisor with a proper
 // one-for-one restart strategy modelled on Erlang/OTP:
 //
-//   * Each actor is launched in its own goroutine wrapped in a
+//   - Each actor is launched in its own goroutine wrapped in a
 //     panic recovery + run-loop wrapper.
-//   * On crash, the supervisor restarts the actor with an
+//   - On crash, the supervisor restarts the actor with an
 //     exponential backoff (250ms → 30s, capped).
-//   * Restarts are tracked per actor in a sliding window; if more
+//   - Restarts are tracked per actor in a sliding window; if more
 //     than MaxRestarts happen within RestartWindow, the actor is
 //     promoted to PERMANENT (will not be auto-recreated until a
 //     human revokes the quarantine) and all subsequent mail to that
@@ -123,8 +123,8 @@ type Supervisor struct {
 	totalSpilled  atomic.Int64
 	totalRestarts atomic.Int64
 
-	started  atomic.Bool
-	stopOnce sync.Once
+	started      atomic.Bool
+	stopOnce     sync.Once
 	lastHealthAt atomic.Int64 // unix-nano
 
 	// hooks

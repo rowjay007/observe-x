@@ -47,9 +47,9 @@ const (
 type IssuedKey struct {
 	TenantID  string
 	KID       string
-	Raw       string    // tenant:kid:secret — show once, then discard
-	Prefix    string    // first 8 chars of the raw key (for human ID)
-	Scopes    []Scope   // canonical scope set baked into the key
+	Raw       string  // tenant:kid:secret — show once, then discard
+	Prefix    string  // first 8 chars of the raw key (for human ID)
+	Scopes    []Scope // canonical scope set baked into the key
 	CreatedAt time.Time
 	ExpiresAt *time.Time
 }

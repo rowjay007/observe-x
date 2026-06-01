@@ -9,17 +9,17 @@
 // HTTP surface (authenticated via the same pkg/auth.PostgresKeyStore
 // as the rest of ObserveX):
 //
-//   POST /v1/events             CEP/sloburn pushes an event
-//   POST /v1/observations       per-event good/bad for an SLO
-//   GET  /v1/alerts             list active alerts for tenant
-//   POST /v1/silences           operator-applied label-matcher silence
-//   GET  /health, /ready, /metrics
+//	POST /v1/events             CEP/sloburn pushes an event
+//	POST /v1/observations       per-event good/bad for an SLO
+//	GET  /v1/alerts             list active alerts for tenant
+//	POST /v1/silences           operator-applied label-matcher silence
+//	GET  /health, /ready, /metrics
 //
 // Notifier configuration is fully env-driven:
 //
-//   OBSERVE_X_SLACK_WEBHOOK_URL
-//   OBSERVE_X_PAGERDUTY_INTEGRATION_KEY
-//   OBSERVE_X_WEBHOOK_URL
+//	OBSERVE_X_SLACK_WEBHOOK_URL
+//	OBSERVE_X_PAGERDUTY_INTEGRATION_KEY
+//	OBSERVE_X_WEBHOOK_URL
 //
 // Missing config ⇒ that notifier isn't registered (alert still
 // persists; just doesn't dispatch externally). At least one notifier
@@ -265,11 +265,11 @@ func eventsHandler(st *store.Store, dispatcher *notifier.Dispatcher, hub *sseHub
 		}
 
 		c.JSON(http.StatusAccepted, gin.H{
-			"status":       "received",
-			"fingerprint":  fp,
+			"status":         "received",
+			"fingerprint":    fp,
 			"new_transition": newTransition,
-			"silenced":     silenced,
-			"dispatched":   dispatched,
+			"silenced":       silenced,
+			"dispatched":     dispatched,
 		})
 	}
 }
@@ -278,10 +278,10 @@ func dispatchFiring(ctx context.Context, dispatcher *notifier.Dispatcher, st *st
 	tenantID, fp string, req incomingEvent, at time.Time, logger *zap.Logger) {
 	n := notifier.Notification{
 		Fingerprint: fp, TenantID: tenantID,
-		Severity:    notifier.Severity(req.Severity),
-		Title:       req.Title, Description: req.Description,
-		Labels:      req.Labels, Annotations: req.Annotations,
-		Source:      "alert-manager", StartsAt: at,
+		Severity: notifier.Severity(req.Severity),
+		Title:    req.Title, Description: req.Description,
+		Labels: req.Labels, Annotations: req.Annotations,
+		Source: "alert-manager", StartsAt: at,
 	}
 	if err := dispatcher.Dispatch(ctx, n); err != nil {
 		logger.Warn("dispatch", zap.String("fp", fp), zap.Error(err))
@@ -296,10 +296,10 @@ func dispatchResolved(ctx context.Context, dispatcher *notifier.Dispatcher,
 	tenantID, fp string, req incomingEvent, at time.Time, logger *zap.Logger) {
 	n := notifier.Notification{
 		Fingerprint: fp, TenantID: tenantID,
-		Severity:    notifier.Severity(req.Severity),
-		Title:       req.Title, Description: req.Description,
-		Labels:      req.Labels, Annotations: req.Annotations,
-		Source:      "alert-manager", StartsAt: at, EndsAt: at,
+		Severity: notifier.Severity(req.Severity),
+		Title:    req.Title, Description: req.Description,
+		Labels: req.Labels, Annotations: req.Annotations,
+		Source: "alert-manager", StartsAt: at, EndsAt: at,
 	}
 	if err := dispatcher.Dispatch(ctx, n); err != nil {
 		logger.Warn("dispatch resolved", zap.String("fp", fp), zap.Error(err))
@@ -426,9 +426,9 @@ func createSilenceHandler(st *store.Store, auditExp auditlog.Exporter, logger *z
 			return
 		}
 		var req struct {
-			Matcher    map[string]string `json:"matcher"`
-			Reason     string            `json:"reason"`
-			DurationS  int               `json:"duration_seconds"`
+			Matcher   map[string]string `json:"matcher"`
+			Reason    string            `json:"reason"`
+			DurationS int               `json:"duration_seconds"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

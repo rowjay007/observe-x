@@ -5,22 +5,22 @@
 //
 // ABI contract (Phase B-5):
 //
-//   Plugin exports:
-//     (export "memory" (memory ...))                      — required, page-size capped
-//     (export "alloc" (func (param i32) (result i32)))    — host calls to write input
-//     (export "free" (func (param i32 i32)))              — host calls to release input
-//     (export "enrich_signal"
-//        (func (param i32 i32) (result i64)))             — main entrypoint
+//	Plugin exports:
+//	  (export "memory" (memory ...))                      — required, page-size capped
+//	  (export "alloc" (func (param i32) (result i32)))    — host calls to write input
+//	  (export "free" (func (param i32 i32)))              — host calls to release input
+//	  (export "enrich_signal"
+//	     (func (param i32 i32) (result i64)))             — main entrypoint
 //
-//   enrich_signal takes (ptr, len) of an input JSON document and
-//   returns a packed i64: high 32 bits = output ptr, low 32 bits =
-//   output len. The output JSON is read from the guest's memory.
-//   Returning (0, 0) means "no enrichment, pass through".
+//	enrich_signal takes (ptr, len) of an input JSON document and
+//	returns a packed i64: high 32 bits = output ptr, low 32 bits =
+//	output len. The output JSON is read from the guest's memory.
+//	Returning (0, 0) means "no enrichment, pass through".
 //
-//   Host imports (env namespace):
-//     (import "env" "log_info"    (func (param i32 i32)))
-//     (import "env" "metric_inc"  (func (param i32 i32)))
-//     (import "env" "now_nanos"   (func (result i64)))
+//	Host imports (env namespace):
+//	  (import "env" "log_info"    (func (param i32 i32)))
+//	  (import "env" "metric_inc"  (func (param i32 i32)))
+//	  (import "env" "now_nanos"   (func (result i64)))
 //
 // Resource limits:
 //   - Memory cap (default 16 MiB) enforced by wazero's RuntimeConfig.
@@ -178,12 +178,12 @@ func pluginName(ctx context.Context) string {
 
 // Plugin is a single loaded WASM module with the four required exports.
 type Plugin struct {
-	name    string
-	module  api.Module
-	alloc   api.Function
-	freeFn  api.Function
-	enrich  api.Function
-	memory  api.Memory
+	name   string
+	module api.Module
+	alloc  api.Function
+	freeFn api.Function
+	enrich api.Function
+	memory api.Memory
 }
 
 // Load compiles wasmBytes and instantiates it with the env module

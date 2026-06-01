@@ -23,14 +23,14 @@ type Tenant struct {
 }
 
 type APIKeyMeta struct {
-	KID         string
-	TenantID    string
-	Prefix      string
-	Scopes      []string
-	CreatedAt   time.Time
-	ExpiresAt   *time.Time
-	RevokedAt   *time.Time
-	LastUsedAt  *time.Time
+	KID        string
+	TenantID   string
+	Prefix     string
+	Scopes     []string
+	CreatedAt  time.Time
+	ExpiresAt  *time.Time
+	RevokedAt  *time.Time
+	LastUsedAt *time.Time
 }
 
 type AuditEvent struct {
@@ -44,9 +44,9 @@ type AuditEvent struct {
 // ─── errors ───────────────────────────────────────────────────────────────
 
 var (
-	ErrTenantNotFound    = errors.New("store: tenant not found")
-	ErrTenantExists      = errors.New("store: tenant already exists")
-	ErrKeyNotFound       = errors.New("store: api key not found")
+	ErrTenantNotFound = errors.New("store: tenant not found")
+	ErrTenantExists   = errors.New("store: tenant already exists")
+	ErrKeyNotFound    = errors.New("store: api key not found")
 )
 
 // ─── Store ────────────────────────────────────────────────────────────────
@@ -179,13 +179,13 @@ func (s *Store) WriteAudit(ctx context.Context, ev AuditEvent) error {
 // AuditRecord is the read shape returned by ListAudit. Includes the
 // server-assigned id + created_at the writer doesn't carry.
 type AuditRecord struct {
-	ID        int64             `json:"id"`
-	TenantID  *string           `json:"tenant_id,omitempty"`
-	Actor     string            `json:"actor"`
-	Action    string            `json:"action"`
-	Details   map[string]any    `json:"details,omitempty"`
-	SourceIP  *string           `json:"source_ip,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
+	ID        int64          `json:"id"`
+	TenantID  *string        `json:"tenant_id,omitempty"`
+	Actor     string         `json:"actor"`
+	Action    string         `json:"action"`
+	Details   map[string]any `json:"details,omitempty"`
+	SourceIP  *string        `json:"source_ip,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
 }
 
 // ListAudit returns the most recent audit entries, optionally

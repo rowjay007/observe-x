@@ -116,7 +116,7 @@ type WAL struct {
 	writeOffset int // current append offset in the active mmap
 	segmentID   uint64
 
-	dirty atomic.Bool // unflushed bytes in active segment
+	dirty  atomic.Bool // unflushed bytes in active segment
 	closed atomic.Bool
 
 	stopCh chan struct{}
