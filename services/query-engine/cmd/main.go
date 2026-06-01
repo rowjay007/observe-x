@@ -137,6 +137,12 @@ func buildRouter(authMW *auth.AuthMiddleware, exec *executor.Executor, logger *z
 	// tenant-pinned cursor at logsTailInterval.
 	authorized.GET("/v1/logs/stream", auth.GinRequireScope(auth.ScopeQuery), logsStreamHandler(exec.Client(), logger))
 
+	// Phase E-5: PromQL + LogQL compatibility shims. Translate
+	// Prometheus / Loki HTTP API requests into ClickHouse SQL
+	// against the same tenant-pinned executor. See pkg/promql,
+	// pkg/logql, and ADR-0033 for the documented subsets.
+	registerShims(authorized, exec.Client(), logger)
+
 	return r
 }
 
