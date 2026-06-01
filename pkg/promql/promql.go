@@ -12,37 +12,37 @@
 //
 // Supported:
 //
-//   Vector selector:   metric{label="v",label!="v",label=~"re",label!~"re"}
-//   Range selector:    metric[5m]   (durations: s/m/h/d, integer + unit)
-//   Aggregations:      sum|avg|min|max|count [by|without (labels)] (vector)
-//   Range functions:   rate(v[d])  irate(v[d])  increase(v[d])
-//                      avg_over_time / sum_over_time / count_over_time
-//                      / max_over_time / min_over_time / quantile_over_time
-//   Quantile:          quantile(0.99, vector)
-//   Numeric literals:  for quantile φ
-//   Comparison ops:    >, <, >=, <=, ==, != against scalar (post-filter)
-//   Binary scalar:     scalar +-*/ on aggregations (post-aggregation expression)
+//	Vector selector:   metric{label="v",label!="v",label=~"re",label!~"re"}
+//	Range selector:    metric[5m]   (durations: s/m/h/d, integer + unit)
+//	Aggregations:      sum|avg|min|max|count [by|without (labels)] (vector)
+//	Range functions:   rate(v[d])  irate(v[d])  increase(v[d])
+//	                   avg_over_time / sum_over_time / count_over_time
+//	                   / max_over_time / min_over_time / quantile_over_time
+//	Quantile:          quantile(0.99, vector)
+//	Numeric literals:  for quantile φ
+//	Comparison ops:    >, <, >=, <=, ==, != against scalar (post-filter)
+//	Binary scalar:     scalar +-*/ on aggregations (post-aggregation expression)
 //
 // NOT supported (returns ErrUnsupported):
 //
-//   * Subqueries (`<expr>[5m:1m]`)
-//   * Recording rules / `topk`/`bottomk` / `histogram_quantile` shortcut
-//   * Offsets / @-modifiers
-//   * Joining/grouping vector-on-vector (`+ on(...)`)
-//   * Functions beyond the list above
+//   - Subqueries (`<expr>[5m:1m]`)
+//   - Recording rules / `topk`/`bottomk` / `histogram_quantile` shortcut
+//   - Offsets / @-modifiers
+//   - Joining/grouping vector-on-vector (`+ on(...)`)
+//   - Functions beyond the list above
 //
 // The translator emits SQL of the shape
 //
-//   SELECT toStartOfInterval(timestamp, INTERVAL step SECOND) AS t,
-//          <agg>(value) AS v
-//          [, labels.<key1> AS k1, …]
-//   FROM   metrics
-//   WHERE  tenant_id = ?     -- always bound from auth, never PromQL
-//     AND  metric_name = ?
-//     AND  <label predicates from selector>
-//     AND  timestamp BETWEEN ? AND ?
-//   GROUP BY t [, k1, …]
-//   ORDER BY t
+//	SELECT toStartOfInterval(timestamp, INTERVAL step SECOND) AS t,
+//	       <agg>(value) AS v
+//	       [, labels.<key1> AS k1, …]
+//	FROM   metrics
+//	WHERE  tenant_id = ?     -- always bound from auth, never PromQL
+//	  AND  metric_name = ?
+//	  AND  <label predicates from selector>
+//	  AND  timestamp BETWEEN ? AND ?
+//	GROUP BY t [, k1, …]
+//	ORDER BY t
 //
 // Tenant safety: tenant_id is NEVER taken from the PromQL string;
 // the executor injects it from the authenticated context (the same

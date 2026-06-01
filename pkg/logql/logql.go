@@ -5,36 +5,36 @@
 // We translate LogQL into ClickHouse SQL against the `logs` table
 // in two flavours:
 //
-//   * Log query — `{stream selector} |= "foo" |~ "bar"`
-//       → SELECT timestamp, severity, service_name, body
-//         FROM logs WHERE stream-selector AND line-filters
+//   - Log query — `{stream selector} |= "foo" |~ "bar"`
+//     → SELECT timestamp, severity, service_name, body
+//     FROM logs WHERE stream-selector AND line-filters
 //
-//   * Metric query — `<aggr>_over_time({stream selector}[5m])`
-//       → SELECT toStartOfInterval(timestamp, INTERVAL step SECOND) AS t,
-//                count() AS v
-//         FROM logs WHERE … GROUP BY t
+//   - Metric query — `<aggr>_over_time({stream selector}[5m])`
+//     → SELECT toStartOfInterval(timestamp, INTERVAL step SECOND) AS t,
+//     count() AS v
+//     FROM logs WHERE … GROUP BY t
 //
 // Supported stream selectors:
 //
-//   {label="v", label!="v", label=~"re", label!~"re"}
+//	{label="v", label!="v", label=~"re", label!~"re"}
 //
-//   Special label names that map to first-class columns:
-//     service / service_name → service_name
-//     severity / level       → severity
-//     anything else          → attributes['<key>']
+//	Special label names that map to first-class columns:
+//	  service / service_name → service_name
+//	  severity / level       → severity
+//	  anything else          → attributes['<key>']
 //
 // Supported line filters (between the {…} and the optional aggregator):
 //
-//   |= "substr"     positionCaseInsensitive(body, '…') > 0
-//   != "substr"     positionCaseInsensitive(body, '…') = 0
-//   |~ "regex"      match(body, '…')
-//   !~ "regex"      NOT match(body, '…')
+//	|= "substr"     positionCaseInsensitive(body, '…') > 0
+//	!= "substr"     positionCaseInsensitive(body, '…') = 0
+//	|~ "regex"      match(body, '…')
+//	!~ "regex"      NOT match(body, '…')
 //
 // Supported metric-over-log functions:
 //
-//   count_over_time({…}[d])
-//   rate({…}[d])     — count_over_time / step
-//   bytes_over_time({…}[d])  — sum(length(body)) per bucket
+//	count_over_time({…}[d])
+//	rate({…}[d])     — count_over_time / step
+//	bytes_over_time({…}[d])  — sum(length(body)) per bucket
 //
 // All values are bound as `?` parameters; raw bytes from the
 // caller never get string-formatted into SQL.
@@ -418,7 +418,11 @@ func splitCall(s string) (name, body string, ok bool) {
 	}
 	name = strings.TrimSpace(s[:lparen])
 	for _, r := range name {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || r == '_') {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r == '_':
+		default:
 			return "", "", false
 		}
 	}

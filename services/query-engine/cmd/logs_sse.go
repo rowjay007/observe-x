@@ -4,26 +4,26 @@
 //
 // Why polling, not a push channel from the ingest path:
 //
-//   The ingest-gateway and the query-engine are independent
-//   services; routing per-row events from ingest into a long-lived
-//   SSE channel on query-engine would require either (a) a shared
-//   in-memory bus (forces the two services into a single pod), or
-//   (b) Kafka/NATS as a hot side-car for every log line (operational
-//   bloat for a feature that only the operator console consumes).
+//	The ingest-gateway and the query-engine are independent
+//	services; routing per-row events from ingest into a long-lived
+//	SSE channel on query-engine would require either (a) a shared
+//	in-memory bus (forces the two services into a single pod), or
+//	(b) Kafka/NATS as a hot side-car for every log line (operational
+//	bloat for a feature that only the operator console consumes).
 //
-//   A 1-second poll of `SELECT … WHERE timestamp > last_seen` from
-//   the same ClickHouse the operator already pays for adds <1ms of
-//   query time per tick (the `(tenant_id, service_name, timestamp)`
-//   ORDER BY key lets ClickHouse prune to a single granule per
-//   tenant) and reuses the existing auth, RBAC, multi-tenant
-//   isolation, and rate-limit paths. We can swap to a push bus
-//   later under the same SSE wire shape if the workload demands.
+//	A 1-second poll of `SELECT … WHERE timestamp > last_seen` from
+//	the same ClickHouse the operator already pays for adds <1ms of
+//	query time per tick (the `(tenant_id, service_name, timestamp)`
+//	ORDER BY key lets ClickHouse prune to a single granule per
+//	tenant) and reuses the existing auth, RBAC, multi-tenant
+//	isolation, and rate-limit paths. We can swap to a push bus
+//	later under the same SSE wire shape if the workload demands.
 //
 // Wire frames (sse_test.go in alert-manager has the reference impl):
 //
-//   :keepalive\n\n                       (heartbeat every 15s)
-//   event: log\ndata: {…json…}\n\n
-//   event: error\ndata: {"msg":"…"}\n\n  (terminal)
+//	:keepalive\n\n                       (heartbeat every 15s)
+//	event: log\ndata: {…json…}\n\n
+//	event: error\ndata: {"msg":"…"}\n\n  (terminal)
 //
 // Auth: requires the `query` scope (same as POST /v1/query).
 //

@@ -3,7 +3,6 @@ package promql
 import (
 	"fmt"
 	"strings"
-	"unicode"
 )
 
 type tokKind int
@@ -87,7 +86,7 @@ func tokenize(src string) ([]token, error) {
 				out = append(out, token{tkRegexNoMt, "!~", i})
 				i += 2
 			} else {
-				return nil, fmt.Errorf("at %d: bare !", i)
+				return nil, fmt.Errorf("at %d: bare %q", i, '!')
 			}
 		case c == '=':
 			if i+1 < len(src) && src[i+1] == '=' {
@@ -234,8 +233,11 @@ func readIdent(src string) (string, int) {
 }
 
 func isIdentStart(c byte) bool {
-	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-		(c >= 0x80 && c <= 0xff && unicode.IsLetter(rune(c)))
+	// Identifier start matches a strict ASCII subset; PromQL metric
+	// names per the spec are [a-zA-Z_:][a-zA-Z0-9_:]*. Non-ASCII
+	// identifiers are not Prometheus-conformant; we deliberately
+	// don't accept them rather than carrying a unicode dependency.
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 func isIdentCont(c byte) bool {
 	return isIdentStart(c) || isDigit(c) || c == ':'

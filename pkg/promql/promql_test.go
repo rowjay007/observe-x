@@ -133,7 +133,7 @@ func TestTranslateScalarBinaryOps(t *testing.T) {
 func TestTranslateRejects(t *testing.T) {
 	t.Parallel()
 	cases := []string{
-		`topk(5, rps)`,            // unsupported aggregator
+		`topk(5, rps)`, // unsupported aggregator
 		`histogram_quantile(0.95, sum(rate(latency_bucket[5m])))`, // function not in subset
 		`up + down`, // vector-on-vector binop
 		``,          // empty
@@ -161,11 +161,11 @@ func TestUnsupportedError(t *testing.T) {
 func TestParseDuration(t *testing.T) {
 	t.Parallel()
 	cases := map[string]time.Duration{
-		"30s":  30 * time.Second,
-		"5m":   5 * time.Minute,
-		"1h":   time.Hour,
-		"1d":   24 * time.Hour,
-		"1w":   7 * 24 * time.Hour,
+		"30s":   30 * time.Second,
+		"5m":    5 * time.Minute,
+		"1h":    time.Hour,
+		"1d":    24 * time.Hour,
+		"1w":    7 * 24 * time.Hour,
 		"500ms": 500 * time.Millisecond,
 	}
 	for s, want := range cases {

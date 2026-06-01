@@ -4,16 +4,28 @@ Distributed observability and APM platform written in Go. Self-hosted,
 multi-tenant ingestion, processing, storage, and query engine for
 metrics, logs, traces, and profiling data.
 
-> **Status — v1.0 production-ready (Phase D shipped, Phase E-0 visualization live).**
+> **Status — v1.1 visualization-complete (Phase A + B + C + D + E all shipped).**
 > Phase A + Phase B + Phase C (slices 1, 2, 3a, 3b, 4) + Phase D
-> (slices 1‑10) are all complete. Phase E-0 adds the visualization
-> stack ([ADR-0028](./docs/adr/0028-visualization-strategy.md)):
-> a provisioned Grafana ClickHouse datasource and three tenant-facing
-> dashboards (`tenant-metrics`, `tenant-logs`, `tenant-traces`) under
-> the `ObserveX / Tenant` folder, alongside the existing
-> `ObserveX / Platform` self-observability dashboard. A native
-> visualization workbench inside `services/ui-server` is queued as
-> Phase E-1..E-4 (see [roadmap.md](./roadmap.md)).
+> (slices 1‑10) + Phase E (slices 0‑5) are all complete. Phase E
+> ships *both* an external Grafana surface and a fully-native
+> visualization workbench inside `services/ui-server`:
+>
+> - **E-0** Grafana bootstrap — provisioned ClickHouse datasource
+>   and four dashboards under `ObserveX / Platform` and
+>   `ObserveX / Tenant` folders ([ADR-0028](./docs/adr/0028-visualization-strategy.md)).
+> - **E-1** Native Metrics workbench — multi-panel ObserveQL Metrics
+>   tab with a hand-rolled 300-LOC canvas chart primitive
+>   ([ADR-0029](./docs/adr/0029-native-metrics-workbench.md)).
+> - **E-2** Native Logs explorer — search + live-tail SSE
+>   ([ADR-0030](./docs/adr/0030-native-logs-explorer.md)).
+> - **E-3** Native Trace waterfall + service map
+>   ([ADR-0031](./docs/adr/0031-native-trace-waterfall.md)).
+> - **E-4** Dashboards CRUD with share-by-URL and JSON
+>   import/export ([ADR-0032](./docs/adr/0032-dashboards-crud.md)).
+> - **E-5** PromQL + LogQL compatibility shims on `query-engine`
+>   so existing Grafana panels and rule expressions keep working
+>   without rewriting to ObserveQL
+>   ([ADR-0033](./docs/adr/0033-promql-logql-compat-shims.md)).
 >
 > Phase D adds:
 >
@@ -202,37 +214,57 @@ helm upgrade observex deploy/helm/observex \
 When `tenantApi.oidc.enabled=true`, the static admin-token Secret
 key is NOT consumed. tenant-api fails closed if both are set.
 
-### Visualizing metrics / logs / traces (Phase E-0)
+### Visualizing metrics / logs / traces (Phase E)
 
-The operator console is a control-plane UI; for **chart-style** views
-of the tenant data plane (metrics curves, log live-tail, trace
-waterfalls) we provision Grafana with a ClickHouse datasource and
-three starter dashboards. See
-[ADR-0028](./docs/adr/0028-visualization-strategy.md).
+You have two complementary surfaces. Both are first-class — pick the
+one that matches your workflow, mix them freely.
+
+#### 1) Native operator workbench — `services/ui-server`
+
+The Go ui-server now embeds a four-tab visualization workbench
+alongside the existing Tenants / Query / Alerts / Audit tabs:
+
+| Tab | What it does | ADR |
+|---|---|---|
+| **Metrics** | Multi-panel grid of canvas-rendered time series. Each panel is a tenant + ObserveQL query; tooltip + crosshair + click-drag time-range select. Refresh interval (off / 10s / 30s / 1m). | [ADR-0029](./docs/adr/0029-native-metrics-workbench.md) |
+| **Logs** | Search by service / severity / body substring; live-tail toggle that streams from `query-engine`'s SSE endpoint at 1s polling resolution. Click a row to expand `attributes` + `trace_id`. | [ADR-0030](./docs/adr/0030-native-logs-explorer.md) |
+| **Traces** | Search the last N traces filtered by service + min duration. Click a row → Gantt-style waterfall + canvas service map for that trace. | [ADR-0031](./docs/adr/0031-native-trace-waterfall.md) |
+| **Dashboards** | Save the current Metrics layout as a named dashboard. Share via `#dash=<uuid>` URL. JSON import/export round-trips through `tenant-api`'s `/v1/dashboards` CRUD. | [ADR-0032](./docs/adr/0032-dashboards-crud.md) |
+
+The chart and waterfall renderers are hand-rolled (~440 LOC combined,
+zero external dependencies) — `services/ui-server/cmd/assets/chart.js`
+and `waterfall.js` — fitting the existing zero-build, single-binary
+SPA philosophy.
+
+#### 2) Grafana — for power users and existing PromQL/LogQL panels
 
 After `docker compose -f deploy/compose/docker-compose.yml up -d`,
-open http://localhost:3000 (login `admin` / `observex`). The
-sidebar shows two folders:
+open http://localhost:3000 (login `admin` / `observex`). The sidebar
+shows:
 
 | Folder | Dashboards | Backed by |
 |---|---|---|
 | `ObserveX / Platform` | `Platform Overview` (signals received, dropped, queue depth, WAL p95, anomalies, HTTP rate, RSS) | Prometheus (self-observability) |
 | `ObserveX / Tenant` | `Tenant — Metrics Explorer`, `Tenant — Logs Explorer`, `Tenant — Traces Explorer` | ClickHouse (tenant data) |
 
-Each tenant dashboard exposes a `tenant` template variable
-(populated from `SELECT DISTINCT tenant_id`), plus service /
-severity / metric filters appropriate to the signal type.
+Existing PromQL/LogQL dashboards keep working by pointing them at
+the new compatibility endpoints on `query-engine`:
+
+```
+PromQL  →  /prom/api/v1/{query,query_range}
+LogQL   →  /loki/api/v1/{query,query_range}
+```
+
+The documented subsets cover ~80% of dashboard panel usage; see
+[ADR-0033](./docs/adr/0033-promql-logql-compat-shims.md) for the
+exact supported syntax and the rejection-with-error behaviour for
+anything outside it.
 
 In Kubernetes the chart ships the dashboards and the ClickHouse
 datasource as three ConfigMaps (`observex-grafana-datasources`,
 `observex-grafana-provider`, `observex-grafana-dashboards`) that you
-mount into whichever Grafana you already operate. Disable the
-provisioning ConfigMaps entirely with
-`--set grafana.provisioning.create=false`.
-
-A native Metrics / Logs / Traces workbench inside `services/ui-server`
-is planned as Phase E-1..E-4 ([roadmap.md](./roadmap.md)); Grafana
-remains as the SQL escape hatch even after that ships.
+mount into whichever Grafana you already operate. Disable provisioning
+with `--set grafana.provisioning.create=false`.
 
 ### Cold tier (S3)
 

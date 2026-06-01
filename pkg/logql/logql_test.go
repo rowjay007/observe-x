@@ -90,13 +90,13 @@ func TestMetricQueries(t *testing.T) {
 func TestRejects(t *testing.T) {
 	t.Parallel()
 	cases := []string{
-		``,                                  // empty
-		`{service="api"`,                    // unterminated selector
-		`{service=api}`,                     // unquoted value
-		`{service="api"} |~ "[bad"`,         // bad regex
-		`fooooo({service="api"}[5m])`,       // unknown function
-		`topk(5, {service="api"})`,          // unsupported
-		`count_over_time({service="api"})`,  // missing [duration]
+		``,                                 // empty
+		`{service="api"`,                   // unterminated selector
+		`{service=api}`,                    // unquoted value
+		`{service="api"} |~ "[bad"`,        // bad regex
+		`fooooo({service="api"}[5m])`,      // unknown function
+		`topk(5, {service="api"})`,         // unsupported
+		`count_over_time({service="api"})`, // missing [duration]
 	}
 	for _, q := range cases {
 		q := q

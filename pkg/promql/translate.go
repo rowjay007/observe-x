@@ -8,22 +8,22 @@ import (
 
 // lower compiles the AST into ClickHouse SQL. The shape is fixed:
 //
-//   SELECT toStartOfInterval(timestamp, INTERVAL <step> SECOND) AS t,
-//          <agg-expr>(value) AS v
-//          [, labels_columns]
-//   FROM   metrics
-//   WHERE  tenant_id = ?       -- bound by caller (executor injects)
-//     AND  metric_name = ?     -- from outermost vector selector
-//     AND  <label predicates>
-//     AND  timestamp BETWEEN ? AND ?
-//   GROUP BY t [, label_columns]
-//   ORDER BY t
+//	SELECT toStartOfInterval(timestamp, INTERVAL <step> SECOND) AS t,
+//	       <agg-expr>(value) AS v
+//	       [, labels_columns]
+//	FROM   metrics
+//	WHERE  tenant_id = ?       -- bound by caller (executor injects)
+//	  AND  metric_name = ?     -- from outermost vector selector
+//	  AND  <label predicates>
+//	  AND  timestamp BETWEEN ? AND ?
+//	GROUP BY t [, label_columns]
+//	ORDER BY t
 //
 // Args order is fixed so the executor can swap in tenant_id:
 //
-//   [0] tenant_id placeholder slot — left to caller, see note
-//   [1] metric_name
-//   [...]: label values, then start, then end, then optional phi
+//	[0] tenant_id placeholder slot — left to caller, see note
+//	[1] metric_name
+//	[...]: label values, then start, then end, then optional phi
 //
 // Actually we DO NOT add the tenant placeholder here — the
 // query-engine handler wraps every query with `tenant_id = ?` from
@@ -244,7 +244,7 @@ func lowerBin(b binExpr, p QueryParams) (*Result, error) {
 	switch op {
 	case "+", "-", "*", "/":
 		if swapped {
-			expr = fmt.Sprintf("(%g %s v)", scalar, op, )
+			expr = fmt.Sprintf("(%g %s v)", scalar, op)
 		} else {
 			expr = fmt.Sprintf("(v %s %g)", op, scalar)
 		}
