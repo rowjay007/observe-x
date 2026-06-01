@@ -149,3 +149,31 @@ ports:
   grpcOtlp: 4317
   statsd: 8125
   metrics: 7001
+
+# Grafana provisioning ConfigMaps — ADR-0028.
+#
+# The chart does NOT deploy Grafana itself (most operators already
+# run grafana/grafana-operator or the kube-prometheus-stack chart).
+# What we ship are two ConfigMaps the operator mounts into their
+# Grafana pod:
+#
+#   * observex-grafana-datasources   — ClickHouse + Prometheus
+#   * observex-grafana-dashboards    — platform + tenant dashboards
+#
+# Mount the first under /etc/grafana/provisioning/datasources and
+# the second under /var/lib/grafana/dashboards (with the matching
+# provider config at /etc/grafana/provisioning/dashboards). Disable
+# entirely by setting grafana.provisioning.create=false.
+grafana:
+  provisioning:
+    create: true
+    # Override when the operator's ClickHouse runs in a different
+    # namespace or with a non-default service name.
+    clickhouse:
+      host: clickhouse
+      port: 9000
+      database: observex
+      # If non-empty, the chart pulls the password from this Secret
+      # key and mounts it as a file path Grafana reads.
+      existingSecret: ""
+      existingSecretKey: clickhouse-pass

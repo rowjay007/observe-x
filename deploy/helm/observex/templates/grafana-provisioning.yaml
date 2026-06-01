@@ -1,0 +1,104 @@
+{{- /*
+Grafana provisioning ConfigMaps (ADR-0028).
+
+This template renders two ConfigMaps the cluster operator mounts
+into their Grafana deployment. We do NOT package Grafana itself —
+that's the operator's responsibility (kube-prometheus-stack,
+grafana-operator, or a hand-rolled Deployment) — because trying to
+own Grafana's lifecycle from this chart fights with every existing
+production install.
+
+Mount mapping:
+  observex-grafana-datasources  ⇒ /etc/grafana/provisioning/datasources
+  observex-grafana-dashboards   ⇒ /var/lib/grafana/dashboards
+  observex-grafana-provider     ⇒ /etc/grafana/provisioning/dashboards
+
+The grafana-clickhouse-datasource plugin must be installed; the
+simplest path is the GF_INSTALL_PLUGINS env var on the Grafana pod.
+*/}}
+{{- if .Values.grafana.provisioning.create }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: observex-grafana-datasources
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+data:
+  clickhouse.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: ClickHouse
+        uid: observex-clickhouse
+        type: grafana-clickhouse-datasource
+        access: proxy
+        editable: false
+        jsonData:
+          host: {{ .Values.grafana.provisioning.clickhouse.host | quote }}
+          port: {{ .Values.grafana.provisioning.clickhouse.port }}
+          protocol: native
+          defaultDatabase: {{ .Values.grafana.provisioning.clickhouse.database | quote }}
+          tlsSkipVerify: true
+          logs:
+            defaultDatabase: {{ .Values.grafana.provisioning.clickhouse.database | quote }}
+            defaultTable: logs
+            timeColumn: timestamp
+            levelColumn: severity
+            messageColumn: body
+          traces:
+            defaultDatabase: {{ .Values.grafana.provisioning.clickhouse.database | quote }}
+            defaultTable: traces
+            traceIdColumn: trace_id
+            spanIdColumn: span_id
+            parentSpanIdColumn: parent_span_id
+            serviceNameColumn: service_name
+            operationNameColumn: operation_name
+            startTimeColumn: start_time
+            durationColumn: duration_ns
+            durationUnit: nanoseconds
+            tagsColumn: attributes
+            statusCodeColumn: status_code
+        {{- with .Values.grafana.provisioning.clickhouse.existingSecret }}
+        secureJsonData:
+          password: ${file:/etc/grafana/secrets/{{ . }}/{{ $.Values.grafana.provisioning.clickhouse.existingSecretKey }}}
+        {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: observex-grafana-provider
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: ObserveX-Platform
+        orgId: 1
+        folder: ObserveX / Platform
+        type: file
+        disableDeletion: true
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards/platform
+      - name: ObserveX-Tenant
+        orgId: 1
+        folder: ObserveX / Tenant
+        type: file
+        disableDeletion: true
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards/tenant
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: observex-grafana-dashboards
+  labels:
+    {{- include "observex.labels" . | nindent 4 }}
+data:
+{{- range $path, $_ := .Files.Glob "dashboards/**.json" }}
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
+{{- end }}

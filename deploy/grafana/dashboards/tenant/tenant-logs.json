@@ -1,0 +1,97 @@
+{
+  "title": "Tenant — Logs Explorer",
+  "uid": "observex-tenant-logs",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "tags": ["observex", "tenant", "logs"],
+  "templating": {
+    "list": [
+      {
+        "name": "tenant",
+        "label": "Tenant",
+        "type": "query",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+        "refresh": 2,
+        "sort": 1,
+        "rawSql": "SELECT DISTINCT tenant_id FROM observex.logs ORDER BY tenant_id"
+      },
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "multi": true,
+        "rawSql": "SELECT DISTINCT service_name FROM observex.logs WHERE tenant_id = '${tenant}' AND service_name != '' ORDER BY service_name"
+      },
+      {
+        "name": "severity",
+        "label": "Severity",
+        "type": "custom",
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "query": "TRACE,DEBUG,INFO,WARN,ERROR,FATAL",
+        "options": [
+          { "selected": true, "text": "All", "value": "$__all" },
+          { "selected": false, "text": "TRACE", "value": "TRACE" },
+          { "selected": false, "text": "DEBUG", "value": "DEBUG" },
+          { "selected": false, "text": "INFO", "value": "INFO" },
+          { "selected": false, "text": "WARN", "value": "WARN" },
+          { "selected": false, "text": "ERROR", "value": "ERROR" },
+          { "selected": false, "text": "FATAL", "value": "FATAL" }
+        ]
+      },
+      {
+        "name": "search",
+        "label": "Body contains",
+        "type": "textbox",
+        "current": { "value": "" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Log volume",
+      "type": "timeseries",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 6 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 0,
+          "rawSql": "SELECT toStartOfInterval(timestamp, INTERVAL $__interval_s SECOND) AS t, severity, count() AS n FROM observex.logs WHERE tenant_id = '${tenant}' AND (service_name IN (${service:sqlstring}) OR has(array(${service:sqlstring}), '__all__')) AND (severity IN (${severity:sqlstring}) OR has(array(${severity:sqlstring}), '$$__all')) AND ('${search}' = '' OR positionCaseInsensitive(body, '${search}') > 0) AND timestamp >= $__fromTime AND timestamp < $__toTime GROUP BY t, severity ORDER BY t"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Logs",
+      "type": "logs",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+      "gridPos": { "x": 0, "y": 6, "w": 24, "h": 20 },
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "wrapLogMessage": true,
+        "enableLogDetails": true,
+        "sortOrder": "Descending",
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "queryType": "logs",
+          "format": 2,
+          "rawSql": "SELECT timestamp, severity, service_name, body, trace_id, span_id, attributes FROM observex.logs WHERE tenant_id = '${tenant}' AND (service_name IN (${service:sqlstring}) OR has(array(${service:sqlstring}), '__all__')) AND (severity IN (${severity:sqlstring}) OR has(array(${severity:sqlstring}), '$$__all')) AND ('${search}' = '' OR positionCaseInsensitive(body, '${search}') > 0) AND timestamp >= $__fromTime AND timestamp < $__toTime ORDER BY timestamp DESC LIMIT 500"
+        }
+      ]
+    }
+  ]
+}

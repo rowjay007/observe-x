@@ -67,6 +67,10 @@ services:
       - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=24h"]
 
+  # Grafana — visualization for both self-observability (Prometheus)
+  # and tenant data (ClickHouse). The grafana-clickhouse-datasource
+  # plugin is auto-installed on container start so dashboards under
+  # /var/lib/grafana/dashboards/tenant render out of the box.
   grafana:
     image: grafana/grafana:11.4.0
     ports: ["3000:3000"]
@@ -74,10 +78,13 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: observex
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
     volumes:
       - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
       - ../grafana/provisioning:/etc/grafana/provisioning:ro
-    depends_on: [prometheus]
+    depends_on:
+      prometheus: { condition: service_started }
+      clickhouse: { condition: service_healthy }
 
   # ─── ObserveX services ──────────────────────────────────────────────
   tenant-api:

@@ -1,0 +1,147 @@
+{
+  "title": "Tenant — Traces Explorer",
+  "uid": "observex-tenant-traces",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "tags": ["observex", "tenant", "traces"],
+  "templating": {
+    "list": [
+      {
+        "name": "tenant",
+        "label": "Tenant",
+        "type": "query",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+        "refresh": 2,
+        "sort": 1,
+        "rawSql": "SELECT DISTINCT tenant_id FROM observex.traces ORDER BY tenant_id"
+      },
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "multi": true,
+        "rawSql": "SELECT DISTINCT service_name FROM observex.traces WHERE tenant_id = '${tenant}' AND service_name != '' ORDER BY service_name"
+      },
+      {
+        "name": "min_duration_ms",
+        "label": "Min duration (ms)",
+        "type": "textbox",
+        "current": { "value": "0" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Span rate",
+      "type": "timeseries",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 0,
+          "rawSql": "SELECT toStartOfInterval(start_time, INTERVAL $__interval_s SECOND) AS t, service_name, count() / $__interval_s AS rps FROM observex.traces WHERE tenant_id = '${tenant}' AND (service_name IN (${service:sqlstring}) OR has(array(${service:sqlstring}), '__all__')) AND start_time >= $__fromTime AND start_time < $__toTime GROUP BY t, service_name ORDER BY t"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Latency percentiles (p50 / p95 / p99) — ms",
+      "type": "timeseries",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 0,
+          "rawSql": "SELECT toStartOfInterval(start_time, INTERVAL $__interval_s SECOND) AS t, quantile(0.50)(duration_ns) / 1e6 AS p50, quantile(0.95)(duration_ns) / 1e6 AS p95, quantile(0.99)(duration_ns) / 1e6 AS p99 FROM observex.traces WHERE tenant_id = '${tenant}' AND (service_name IN (${service:sqlstring}) OR has(array(${service:sqlstring}), '__all__')) AND start_time >= $__fromTime AND start_time < $__toTime GROUP BY t ORDER BY t"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Error rate (% of spans with non-OK status)",
+      "type": "stat",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+      "gridPos": { "x": 0, "y": 8, "w": 6, "h": 6 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.01 },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT countIf(status_code NOT IN ('OK','')) / nullIf(count(),0) AS error_rate FROM observex.traces WHERE tenant_id = '${tenant}' AND start_time >= $__fromTime AND start_time < $__toTime"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Top slow operations (avg ms)",
+      "type": "bargauge",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+      "gridPos": { "x": 6, "y": 8, "w": 18, "h": 6 },
+      "options": { "displayMode": "lcd", "orientation": "horizontal" },
+      "fieldConfig": { "defaults": { "unit": "ms" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT concat(service_name, ' · ', operation_name) AS op, avg(duration_ns) / 1e6 AS avg_ms FROM observex.traces WHERE tenant_id = '${tenant}' AND start_time >= $__fromTime AND start_time < $__toTime AND duration_ns >= toInt64(${min_duration_ms:csv}) * 1000000 GROUP BY op ORDER BY avg_ms DESC LIMIT 15"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Recent traces (click trace_id to open waterfall)",
+      "type": "table",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+      "gridPos": { "x": 0, "y": 14, "w": 24, "h": 12 },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "trace_id" },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open trace",
+                    "url": "/explore?left=%7B%22datasource%22:%22observex-clickhouse%22,%22queries%22:%5B%7B%22queryType%22:%22traceql%22,%22query%22:%22${__value.raw}%22%7D%5D%7D"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT trace_id, service_name, operation_name, start_time, duration_ns / 1e6 AS duration_ms, status_code FROM observex.traces WHERE tenant_id = '${tenant}' AND (service_name IN (${service:sqlstring}) OR has(array(${service:sqlstring}), '__all__')) AND start_time >= $__fromTime AND start_time < $__toTime AND duration_ns >= toInt64(${min_duration_ms:csv}) * 1000000 ORDER BY start_time DESC LIMIT 200"
+        }
+      ]
+    }
+  ]
+}

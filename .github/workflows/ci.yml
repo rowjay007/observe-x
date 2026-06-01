@@ -260,6 +260,33 @@ jobs:
           grep -q "ui-server" /tmp/rendered-full.yaml
           # Admin token MUST be absent when OIDC is enabled.
           ! grep -q "OBSERVE_X_TENANT_API_ADMIN_TOKEN" /tmp/rendered-full.yaml
+      - name: helm template (Phase E-0 Grafana provisioning)
+        run: |
+          # Asserts the three ConfigMaps that ship the visualization
+          # stack (ADR-0028) render cleanly AND embed all four
+          # dashboard JSON payloads (1 platform + 3 tenant).
+          helm template observex deploy/helm/observex > /tmp/rendered-viz.yaml
+          grep -q "name: observex-grafana-datasources" /tmp/rendered-viz.yaml
+          grep -q "name: observex-grafana-provider"    /tmp/rendered-viz.yaml
+          grep -q "name: observex-grafana-dashboards"  /tmp/rendered-viz.yaml
+          grep -q "observex-overview.json"             /tmp/rendered-viz.yaml
+          grep -q "tenant-metrics.json"                /tmp/rendered-viz.yaml
+          grep -q "tenant-logs.json"                   /tmp/rendered-viz.yaml
+          grep -q "tenant-traces.json"                 /tmp/rendered-viz.yaml
+          # Opt-out path should produce ZERO grafana CMs.
+          helm template observex deploy/helm/observex \
+            --set grafana.provisioning.create=false \
+            > /tmp/rendered-noviz.yaml
+          ! grep -q "name: observex-grafana-" /tmp/rendered-noviz.yaml
+      - name: Validate dashboard JSON
+        run: |
+          # Each dashboard must be valid JSON. A typo here would slip
+          # past helm template (it just embeds raw text) but break at
+          # Grafana load time, so we parse on the runner.
+          for f in deploy/grafana/dashboards/**/*.json; do
+            python3 -c "import json,sys; json.load(open('$f'))" \
+              || (echo "Invalid JSON: $f" && exit 1)
+          done
       - name: kubeval rendered manifests
         uses: instrumenta/kubeval-action@master
         continue-on-error: true

@@ -1,0 +1,105 @@
+{
+  "title": "Tenant — Metrics Explorer",
+  "uid": "observex-tenant-metrics",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-3h", "to": "now" },
+  "tags": ["observex", "tenant", "metrics"],
+  "templating": {
+    "list": [
+      {
+        "name": "tenant",
+        "label": "Tenant",
+        "type": "query",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+        "refresh": 2,
+        "sort": 1,
+        "rawSql": "SELECT DISTINCT tenant_id FROM observex.metrics ORDER BY tenant_id"
+      },
+      {
+        "name": "metric",
+        "label": "Metric",
+        "type": "query",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "multi": true,
+        "rawSql": "SELECT DISTINCT metric_name FROM observex.metrics WHERE tenant_id = '${tenant}' ORDER BY metric_name"
+      },
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": true,
+        "multi": true,
+        "rawSql": "SELECT DISTINCT labels['service.name'] FROM observex.metrics WHERE tenant_id = '${tenant}' AND labels['service.name'] != '' ORDER BY 1"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Metric values over time",
+      "type": "timeseries",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 9 },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 0,
+          "rawSql": "SELECT toStartOfInterval(timestamp, INTERVAL $__interval_s SECOND) AS t, metric_name, avg(value) AS v FROM observex.metrics WHERE tenant_id = '${tenant}' AND metric_name IN (${metric:sqlstring}) AND (labels['service.name'] IN (${service:sqlstring}) OR has(array(${service:sqlstring}), '__all__')) AND timestamp >= $__fromTime AND timestamp < $__toTime GROUP BY t, metric_name ORDER BY t"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Top metrics by cardinality (last hour)",
+      "type": "bargauge",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+      "gridPos": { "x": 0, "y": 9, "w": 12, "h": 8 },
+      "options": { "displayMode": "lcd", "orientation": "horizontal" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT metric_name, count() AS samples FROM observex.metrics WHERE tenant_id = '${tenant}' AND timestamp >= now() - INTERVAL 1 HOUR GROUP BY metric_name ORDER BY samples DESC LIMIT 20"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Ingest rate (samples / s) — by service",
+      "type": "timeseries",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+      "gridPos": { "x": 12, "y": 9, "w": 12, "h": 8 },
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 0,
+          "rawSql": "SELECT toStartOfInterval(received_at, INTERVAL $__interval_s SECOND) AS t, labels['service.name'] AS service, count() / $__interval_s AS rate FROM observex.metrics WHERE tenant_id = '${tenant}' AND received_at >= $__fromTime AND received_at < $__toTime GROUP BY t, service ORDER BY t"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Latest 100 samples",
+      "type": "table",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "observex-clickhouse" },
+      "gridPos": { "x": 0, "y": 17, "w": 24, "h": 9 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": 1,
+          "rawSql": "SELECT timestamp, metric_name, value, labels['service.name'] AS service FROM observex.metrics WHERE tenant_id = '${tenant}' AND timestamp >= now() - INTERVAL 15 MINUTE ORDER BY timestamp DESC LIMIT 100"
+        }
+      ]
+    }
+  ]
+}

@@ -1,10 +1,24 @@
+# Dashboard providers. We split the platform self-observability
+# folder from the tenant-facing folder so operators and end-users see
+# a clear separation in the Grafana sidebar.
 apiVersion: 1
 providers:
-  - name: ObserveX
+  - name: ObserveX-Platform
     orgId: 1
-    folder: ObserveX
+    folder: ObserveX / Platform
     type: file
     disableDeletion: true
     updateIntervalSeconds: 30
     options:
-      path: /var/lib/grafana/dashboards
+      path: /var/lib/grafana/dashboards/platform
+      foldersFromFilesStructure: false
+
+  - name: ObserveX-Tenant
+    orgId: 1
+    folder: ObserveX / Tenant
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards/tenant
+      foldersFromFilesStructure: false

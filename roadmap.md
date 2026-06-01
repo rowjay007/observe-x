@@ -1,7 +1,7 @@
 # ObserveX: Distributed Observability & APM Platform — Production Roadmap
 
 **Project:** ObserveX v1.0  
-**Status:** v1.0 production-ready — Phase A + Phase B + Phase C (slices 1–4) + Phase D (slices 1–10) all complete  
+**Status:** v1.0 production-ready — Phase A + Phase B + Phase C (slices 1–4) + Phase D (slices 1–10) all complete; Phase E-0 (Grafana visualization) live, Phase E-1..E-4 (native workbench) queued  
 **Duration:** 18 Weeks (14–18 Weeks)  
 **Go Version:** 1.25+  
 **Difficulty:** Mastery-Level
@@ -66,6 +66,15 @@ ObserveX is a **self-hosted, multi-tenant observability stack** that replaces co
 - [x] **Cold storage (Phase C-3b):** ClickHouse multi-disk `hot_cold` storage policy + `TTL ... TO DISK 'cold_s3'` lifecycle (metrics 30→90d, logs 14→30d, traces 7→30d). `deploy/clickhouse/storage_policies.xml` is shipped as a ConfigMap. `services/cold-tier-controller` scrapes `system.parts` and surfaces per-disk Prometheus gauges. See ADR-0015.
 - [x] **Pluggable ML (Phase C-3b):** `pkg/mlruntime.Predictor` seam; z-score default; ONNX adapter behind a build tag (`-tags onnx`). See ADR-0016.
 - [x] **ui-server (Phase C-4):** Single-binary Go service that embeds a vanilla-JS SPA via `go:embed` and reverse-proxies `/api/*` to the upstreams. Inherits OIDC auth from `pkg/oidc`. Three tabs (Tenants / Query / Alerts) + tight CSP. See ADR-0017.
+
+### Phase E: Visualization 📊
+
+- [x] **E-0 Grafana bootstrap (delivered):** ClickHouse datasource provisioned, three tenant-facing dashboards (`tenant-metrics`, `tenant-logs`, `tenant-traces`) under the `ObserveX / Tenant` folder, plus the existing `ObserveX / Platform` self-observability dashboard. Wired into both `deploy/compose/docker-compose.yml` (via `GF_INSTALL_PLUGINS=grafana-clickhouse-datasource`) and `deploy/helm/observex/templates/grafana-provisioning.yaml` (three ConfigMaps the operator mounts into their existing Grafana). See [ADR-0028](./docs/adr/0028-visualization-strategy.md).
+- [ ] **E-1 Native Metrics workbench:** `services/ui-server` Metrics tab — uPlot (or Apache ECharts) charts reading the Arrow IPC codec we shipped in ADR-0023. Time-picker, panel grid, multi-series legends. ~2 sprints.
+- [ ] **E-2 Native Logs explorer:** virtualized table over `query-engine`, live tail via the existing SSE fan-out (ADR-0020), structured-field filtering, JSON expansion, severity multi-select. ~2 sprints.
+- [ ] **E-3 Native Trace waterfall + service map:** trace search, span waterfall renderer (<500 LOC, vanilla JS), service map computed from `traces.parent_span_id` joins. ~2 sprints.
+- [ ] **E-4 Dashboards CRUD:** Postgres-backed `(tenant_id, name, layout_json)` table inside `tenant-api`, share-by-URL, JSON import/export, role gating. ~1 sprint.
+- [ ] **E-5 (optional) PromQL / LogQL shim** on `query-engine` so Grafana keeps working with zero ClickHouse-SQL leakage after the native tabs become the primary UX. ~1 sprint.
 
 ---
 

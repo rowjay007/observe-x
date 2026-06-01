@@ -4,9 +4,18 @@ Distributed observability and APM platform written in Go. Self-hosted,
 multi-tenant ingestion, processing, storage, and query engine for
 metrics, logs, traces, and profiling data.
 
-> **Status — v1.0 production-ready (Phase D shipped).** Phase A +
-> Phase B + Phase C (slices 1, 2, 3a, 3b, 4) + Phase D (slices 1‑10)
-> are all complete. Phase D adds:
+> **Status — v1.0 production-ready (Phase D shipped, Phase E-0 visualization live).**
+> Phase A + Phase B + Phase C (slices 1, 2, 3a, 3b, 4) + Phase D
+> (slices 1‑10) are all complete. Phase E-0 adds the visualization
+> stack ([ADR-0028](./docs/adr/0028-visualization-strategy.md)):
+> a provisioned Grafana ClickHouse datasource and three tenant-facing
+> dashboards (`tenant-metrics`, `tenant-logs`, `tenant-traces`) under
+> the `ObserveX / Tenant` folder, alongside the existing
+> `ObserveX / Platform` self-observability dashboard. A native
+> visualization workbench inside `services/ui-server` is queued as
+> Phase E-1..E-4 (see [roadmap.md](./roadmap.md)).
+>
+> Phase D adds:
 >
 > - **Multi-feature ML inference** via `Sample.Features []float64`
 >   ([ADR-0018](./docs/adr/0018-multi-feature-ml-input.md));
@@ -192,6 +201,38 @@ helm upgrade observex deploy/helm/observex \
 
 When `tenantApi.oidc.enabled=true`, the static admin-token Secret
 key is NOT consumed. tenant-api fails closed if both are set.
+
+### Visualizing metrics / logs / traces (Phase E-0)
+
+The operator console is a control-plane UI; for **chart-style** views
+of the tenant data plane (metrics curves, log live-tail, trace
+waterfalls) we provision Grafana with a ClickHouse datasource and
+three starter dashboards. See
+[ADR-0028](./docs/adr/0028-visualization-strategy.md).
+
+After `docker compose -f deploy/compose/docker-compose.yml up -d`,
+open http://localhost:3000 (login `admin` / `observex`). The
+sidebar shows two folders:
+
+| Folder | Dashboards | Backed by |
+|---|---|---|
+| `ObserveX / Platform` | `Platform Overview` (signals received, dropped, queue depth, WAL p95, anomalies, HTTP rate, RSS) | Prometheus (self-observability) |
+| `ObserveX / Tenant` | `Tenant — Metrics Explorer`, `Tenant — Logs Explorer`, `Tenant — Traces Explorer` | ClickHouse (tenant data) |
+
+Each tenant dashboard exposes a `tenant` template variable
+(populated from `SELECT DISTINCT tenant_id`), plus service /
+severity / metric filters appropriate to the signal type.
+
+In Kubernetes the chart ships the dashboards and the ClickHouse
+datasource as three ConfigMaps (`observex-grafana-datasources`,
+`observex-grafana-provider`, `observex-grafana-dashboards`) that you
+mount into whichever Grafana you already operate. Disable the
+provisioning ConfigMaps entirely with
+`--set grafana.provisioning.create=false`.
+
+A native Metrics / Logs / Traces workbench inside `services/ui-server`
+is planned as Phase E-1..E-4 ([roadmap.md](./roadmap.md)); Grafana
+remains as the SQL escape hatch even after that ships.
 
 ### Cold tier (S3)
 

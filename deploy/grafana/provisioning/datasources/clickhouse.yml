@@ -1,0 +1,59 @@
+# ClickHouse datasource — the tenant-facing data plane.
+#
+# This is what powers the Metrics / Logs / Traces dashboards. It is
+# distinct from the Prometheus datasource, which surfaces
+# *self-observability* (how ObserveX itself is running). Customers
+# see their own data through the dashboards backed by this source.
+#
+# Requires the grafana-clickhouse-datasource plugin (added via
+# GF_INSTALL_PLUGINS in docker-compose and in deploy/helm/observex
+# values.yaml). The plugin name in the `type` field is the canonical
+# slug Grafana Labs publishes.
+#
+# Auth: in compose we connect with the default `default` user (no
+# password). Production deployments are expected to override the
+# password via a Kubernetes secret mounted at
+# /etc/grafana/secrets/clickhouse and referenced by file path.
+
+apiVersion: 1
+
+datasources:
+  - name: ClickHouse
+    uid: observex-clickhouse
+    type: grafana-clickhouse-datasource
+    access: proxy
+    editable: false
+    jsonData:
+      host: clickhouse
+      port: 9000
+      protocol: native
+      defaultDatabase: observex
+      tlsSkipVerify: true
+      # Per-query logs/traces wiring: Grafana's Logs and Traces panels
+      # use these structured-config blocks to know which columns are
+      # which without forcing the dashboard author to wire them by
+      # hand. Mirrors the schema in migrations/001_initial_schema.sql.
+      logs:
+        defaultDatabase: observex
+        defaultTable: logs
+        otelEnabled: false
+        timeColumn: timestamp
+        levelColumn: severity
+        messageColumn: body
+      traces:
+        defaultDatabase: observex
+        defaultTable: traces
+        otelEnabled: false
+        traceIdColumn: trace_id
+        spanIdColumn: span_id
+        parentSpanIdColumn: parent_span_id
+        serviceNameColumn: service_name
+        operationNameColumn: operation_name
+        startTimeColumn: start_time
+        durationColumn: duration_ns
+        durationUnit: nanoseconds
+        tagsColumn: attributes
+        statusCodeColumn: status_code
+    secureJsonData:
+      # Compose default; production overrides via secret mount.
+      password: ""
