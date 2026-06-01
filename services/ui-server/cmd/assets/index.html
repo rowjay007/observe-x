@@ -12,7 +12,11 @@
       <span class="logo">●</span> ObserveX
     </div>
     <div class="tabs">
-      <button data-tab="tenants" class="tab active">Tenants</button>
+      <button data-tab="metrics" class="tab active">Metrics</button>
+      <button data-tab="logs" class="tab">Logs</button>
+      <button data-tab="traces" class="tab">Traces</button>
+      <button data-tab="dashboards" class="tab">Dashboards</button>
+      <button data-tab="tenants" class="tab">Tenants</button>
       <button data-tab="query" class="tab">Query</button>
       <button data-tab="alerts" class="tab">Alerts</button>
       <button data-tab="audit" class="tab">Audit</button>
@@ -24,7 +28,116 @@
   </nav>
 
   <main>
-    <section id="panel-tenants" class="panel active">
+    <!-- ── Metrics (Phase E-1) ─────────────────────────────── -->
+    <section id="panel-metrics" class="panel active">
+      <header>
+        <h1>Metrics</h1>
+        <div class="row-actions">
+          <label>Tenant <input id="metrics-tenant" placeholder="acme" /></label>
+          <select id="metrics-range">
+            <option value="900000">15 min</option>
+            <option value="3600000" selected>1 hour</option>
+            <option value="21600000">6 hours</option>
+            <option value="86400000">24 hours</option>
+            <option value="604800000">7 days</option>
+          </select>
+          <select id="metrics-refresh">
+            <option value="0">Refresh off</option>
+            <option value="10000">10s</option>
+            <option value="30000" selected>30s</option>
+            <option value="60000">1m</option>
+          </select>
+          <button id="metrics-add">+ Panel</button>
+        </div>
+      </header>
+      <div id="metrics-panels" class="panel-grid"></div>
+      <p class="empty" id="metrics-empty">No panels — click "+ Panel" to add one.</p>
+    </section>
+
+    <!-- ── Logs (Phase E-2) ────────────────────────────────── -->
+    <section id="panel-logs" class="panel">
+      <header>
+        <h1>Logs</h1>
+        <div class="row-actions">
+          <label>Tenant <input id="logs-tenant" placeholder="acme" /></label>
+          <label>Service <input id="logs-service" placeholder="(any)" /></label>
+          <select id="logs-severity">
+            <option value="">All severities</option>
+            <option value="ERROR">ERROR+</option>
+            <option value="WARN">WARN+</option>
+            <option value="INFO">INFO+</option>
+            <option value="DEBUG">DEBUG+</option>
+          </select>
+          <label>Search <input id="logs-search" placeholder="body contains…" /></label>
+          <button id="logs-run">Search</button>
+          <span id="logs-tail-status" class="pill">offline</span>
+          <button id="logs-tail">Live tail</button>
+        </div>
+      </header>
+      <div id="logs-table-wrap" class="logs-table-wrap">
+        <table id="logs-table" class="grid logs-table">
+          <thead><tr><th>Time</th><th>Sev</th><th>Service</th><th>Body</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="empty" id="logs-empty">Run a search to see logs.</p>
+    </section>
+
+    <!-- ── Traces (Phase E-3) ──────────────────────────────── -->
+    <section id="panel-traces" class="panel">
+      <header>
+        <h1>Traces</h1>
+        <div class="row-actions">
+          <label>Tenant <input id="traces-tenant" placeholder="acme" /></label>
+          <label>Service <input id="traces-service" placeholder="(any)" /></label>
+          <label>Min ms <input id="traces-min-ms" type="number" value="0" min="0" /></label>
+          <select id="traces-range">
+            <option value="900000">15 min</option>
+            <option value="3600000" selected>1 hour</option>
+            <option value="21600000">6 hours</option>
+            <option value="86400000">24 hours</option>
+          </select>
+          <button id="traces-search">Search</button>
+        </div>
+      </header>
+      <div class="traces-split">
+        <div class="traces-list">
+          <table id="traces-table" class="grid">
+            <thead><tr><th>Time</th><th>Service</th><th>Operation</th><th>Duration</th><th>Status</th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <p class="empty" id="traces-empty">Run a search to see traces.</p>
+        </div>
+        <div class="traces-detail">
+          <h2 class="subheading" id="trace-detail-title">Waterfall</h2>
+          <div id="trace-waterfall"></div>
+          <h2 class="subheading">Service map</h2>
+          <canvas id="trace-servicemap" width="500" height="220"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Dashboards (Phase E-4) ──────────────────────────── -->
+    <section id="panel-dashboards" class="panel">
+      <header>
+        <h1>Dashboards</h1>
+        <div class="row-actions">
+          <label>Tenant <input id="dash-tenant" placeholder="acme" /></label>
+          <button id="dash-new">New dashboard</button>
+          <button id="dash-import">Import JSON</button>
+          <button id="dash-export">Export current</button>
+          <button id="dash-share">Share link</button>
+          <button id="dash-refresh">Refresh</button>
+        </div>
+      </header>
+      <table id="dashboards-table" class="grid">
+        <thead><tr><th>Name</th><th>Panels</th><th>Updated</th><th>Actions</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="empty" id="dashboards-empty">No saved dashboards.</p>
+    </section>
+
+    <section id="panel-tenants" class="panel">
       <header>
         <h1>Tenants</h1>
         <button id="refresh-tenants">Refresh</button>
@@ -87,6 +200,8 @@
     </section>
   </main>
 
+  <script src="/chart.js"></script>
+  <script src="/waterfall.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -215,3 +215,124 @@ main {
   overflow-x: auto;
   display: block;
 }
+
+/* ── Metrics (Phase E-1) ─────────────────────────────────── */
+.row-actions select {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  font-size: 12px;
+}
+.panel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 16px;
+}
+.metric-panel {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  min-height: 260px;
+  display: flex;
+  flex-direction: column;
+}
+.metric-panel .panel-head {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  align-items: center;
+}
+.metric-panel .panel-head input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.metric-panel .panel-head button {
+  background: transparent;
+  color: var(--fg-2);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.metric-panel canvas {
+  flex: 1;
+  width: 100%;
+  min-height: 200px;
+  background: var(--bg);
+  border-radius: var(--radius);
+}
+.metric-panel .panel-err {
+  color: var(--err);
+  font-size: 11px;
+  font-family: var(--mono);
+  margin-top: 6px;
+}
+
+/* ── Logs (Phase E-2) ────────────────────────────────────── */
+.logs-table-wrap {
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+}
+.logs-table { border: 0; border-radius: 0; }
+.logs-table th { position: sticky; top: 0; z-index: 1; }
+.logs-table td.sev { font-weight: 600; width: 60px; }
+.logs-table td.sev.ERROR, .logs-table td.sev.FATAL { color: var(--err); }
+.logs-table td.sev.WARN  { color: var(--warn); }
+.logs-table td.sev.INFO  { color: var(--accent); }
+.logs-table td.sev.DEBUG, .logs-table td.sev.TRACE { color: var(--fg-2); }
+.logs-table td.body { font-family: var(--mono); font-size: 12px; }
+.logs-table td.body pre {
+  margin: 4px 0 0; padding: 6px;
+  background: var(--bg); border-radius: var(--radius);
+  font-size: 11px; color: var(--fg-2);
+  max-height: 240px; overflow: auto; white-space: pre-wrap;
+}
+.logs-table tr.expand td.body { white-space: pre-wrap; word-break: break-word; }
+.logs-table tr.row-clickable { cursor: pointer; }
+.logs-table .time { font-family: var(--mono); font-size: 11px; color: var(--fg-2); width: 180px; }
+
+/* ── Traces (Phase E-3) ──────────────────────────────────── */
+.traces-split {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(420px, 2fr);
+  gap: 16px;
+}
+.traces-list table { font-size: 12px; }
+.traces-list tr.row-clickable { cursor: pointer; }
+.traces-list tr.selected td { background: rgba(88, 166, 255, 0.10); }
+.traces-detail {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  min-height: 320px;
+}
+#trace-waterfall { font-family: var(--mono); font-size: 11px; }
+.span-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+.span-row .label { width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-2); }
+.span-row .bar { height: 10px; border-radius: 2px; background: var(--accent); position: relative; }
+.span-row .dur { color: var(--fg-2); margin-left: 6px; font-size: 10px; }
+.span-row.error .bar { background: var(--err); }
+.span-row.child .label { padding-left: 12px; }
+
+/* ── Dashboards (Phase E-4) ──────────────────────────────── */
+.dash-actions button {
+  background: transparent;
+  color: var(--fg-2);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  font-size: 11px;
+  margin-right: 4px;
+}
+.dash-actions button:hover { color: var(--fg); border-color: var(--accent); }

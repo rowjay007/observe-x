@@ -324,13 +324,573 @@
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────
+  // Phase E-1 — Native Metrics workbench
+  // ─────────────────────────────────────────────────────────────────
+  //
+  // Model:
+  //   state.metrics.panels = [{ id, title, query, color, chart }]
+  // Each panel runs a server-side ObserveQL query and renders the
+  // returned (t, v) rows into an ObservexChart. Queries must select
+  // at least two columns; the first numeric→time column is X, the
+  // first numeric column is Y, the remainder become extra series via
+  // a `series` column when present.
+  state.metrics = {
+    panels: [],
+    nextId: 1,
+    refreshTimer: null,
+  };
+  const PALETTE = ["#58a6ff", "#3fb950", "#f0883e", "#f85149",
+                   "#d2a8ff", "#79c0ff", "#a5d6ff", "#ffa657"];
+
+  $("#metrics-add").addEventListener("click", () => addMetricPanel());
+  $("#metrics-range").addEventListener("change", refreshAllMetricPanels);
+  $("#metrics-refresh").addEventListener("change", setupMetricsAutoRefresh);
+
+  function addMetricPanel(seed) {
+    const id = state.metrics.nextId++;
+    const def = Object.assign(
+      {
+        title: "Untitled panel",
+        query: 'select toStartOfMinute(timestamp) as t, avg(value) as v from metrics where metric_name = "rps" group by t order by t',
+      },
+      seed || {},
+    );
+    const wrap = document.createElement("div");
+    wrap.className = "metric-panel";
+    wrap.dataset.id = id;
+    wrap.innerHTML = `
+      <div class="panel-head">
+        <input class="title" value="${escapeHTML(def.title)}" />
+        <button data-act="remove" title="Remove">✕</button>
+      </div>
+      <textarea class="query" rows="2">${escapeHTML(def.query)}</textarea>
+      <canvas></canvas>
+      <div class="panel-err" hidden></div>
+    `;
+    $("#metrics-panels").appendChild(wrap);
+    const canvas = wrap.querySelector("canvas");
+    const chart = new ObservexChart(canvas, { fill: true });
+    const panel = { id, title: def.title, query: def.query, chart, el: wrap };
+    state.metrics.panels.push(panel);
+    $("#metrics-empty").style.display = "none";
+    wrap.querySelector(".title").addEventListener("change", (e) => { panel.title = e.target.value; });
+    wrap.querySelector(".query").addEventListener("change", (e) => {
+      panel.query = e.target.value;
+      runMetricPanel(panel);
+    });
+    wrap.querySelector('[data-act="remove"]').addEventListener("click", () => removeMetricPanel(panel));
+    runMetricPanel(panel);
+    return panel;
+  }
+
+  function removeMetricPanel(panel) {
+    panel.chart.destroy();
+    panel.el.remove();
+    state.metrics.panels = state.metrics.panels.filter((p) => p !== panel);
+    if (!state.metrics.panels.length) $("#metrics-empty").style.display = "block";
+  }
+
+  async function runMetricPanel(panel) {
+    const tenant = $("#metrics-tenant").value.trim();
+    const rangeMs = parseInt($("#metrics-range").value, 10) || 3_600_000;
+    const errEl = panel.el.querySelector(".panel-err");
+    errEl.hidden = true;
+    try {
+      // NDJSON streaming endpoint we already shipped in Phase B-3.
+      // First line is the header object; subsequent lines are rows.
+      const headers = {
+        "Content-Type": "application/json",
+        "X-Tenant-ID": tenant,
+      };
+      if (state.token) headers["Authorization"] = "Bearer " + state.token;
+      const r = await fetch("/api/query/v1/query", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          query: panel.query,
+          // The planner clamps LIMIT for us; max_rows is advisory.
+          max_rows: 5000,
+          // Time range is enforced by the user's WHERE clause; we
+          // pass these via headers so server-side log lines show
+          // the operator-requested window.
+          timeout_secs: 30,
+        }),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const rows = await readNDJSON(r);
+      const series = ndjsonToSeries(rows, rangeMs);
+      panel.chart.setSeries(series);
+      panel.chart.render();
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.hidden = false;
+      panel.chart.setSeries([]);
+      panel.chart.render();
+    }
+  }
+
+  async function readNDJSON(r) {
+    const text = await r.text();
+    const out = [];
+    for (const line of text.split("\n")) {
+      const l = line.trim();
+      if (!l) continue;
+      try {
+        const obj = JSON.parse(l);
+        // Skip the executor header frame, keep data rows.
+        if (obj && obj._kind === "header") continue;
+        out.push(obj);
+      } catch {
+        // ignore non-JSON lines (trailing trailer, comments, etc.)
+      }
+    }
+    return out;
+  }
+
+  // Convert a {col→value} row set into chart series. The first
+  // datetime-shaped column becomes X; the first non-X numeric column
+  // becomes the primary Y; if a `series` (or `metric_name`,
+  // `service_name`, …) string column is present, rows are bucketed.
+  function ndjsonToSeries(rows, rangeMs) {
+    if (!rows.length) return [];
+    const sample = rows[0];
+    const cols = Object.keys(sample);
+    const tCol = cols.find((c) => looksLikeTime(sample[c]));
+    if (!tCol) return [];
+    const yCols = cols.filter((c) => c !== tCol && typeof sample[c] === "number");
+    if (!yCols.length) return [];
+    const labelCol = cols.find((c) =>
+      c !== tCol && !yCols.includes(c) && typeof sample[c] === "string",
+    );
+
+    if (!labelCol && yCols.length === 1) {
+      const series = [{
+        name: yCols[0],
+        color: PALETTE[0],
+        points: rows.map((r) => ({ t: toMs(r[tCol]), v: r[yCols[0]] })),
+      }];
+      return series;
+    }
+    if (!labelCol && yCols.length > 1) {
+      return yCols.map((c, i) => ({
+        name: c,
+        color: PALETTE[i % PALETTE.length],
+        points: rows.map((r) => ({ t: toMs(r[tCol]), v: r[c] })),
+      }));
+    }
+    // labelCol present: bucket rows by label, plot the first y.
+    const yCol = yCols[0];
+    const byLabel = new Map();
+    for (const r of rows) {
+      const lab = String(r[labelCol] ?? "");
+      if (!byLabel.has(lab)) byLabel.set(lab, []);
+      byLabel.get(lab).push({ t: toMs(r[tCol]), v: r[yCol] });
+    }
+    let i = 0;
+    return Array.from(byLabel.entries()).map(([lab, pts]) => ({
+      name: lab,
+      color: PALETTE[i++ % PALETTE.length],
+      points: pts.sort((a, b) => a.t - b.t),
+    }));
+  }
+  function looksLikeTime(v) {
+    if (v instanceof Date) return true;
+    if (typeof v === "number") return v > 1e11; // unix ms-ish
+    if (typeof v === "string") return !isNaN(Date.parse(v));
+    return false;
+  }
+  function toMs(v) {
+    if (v instanceof Date) return +v;
+    if (typeof v === "number") return v < 1e11 ? v * 1000 : v;
+    if (typeof v === "string") return Date.parse(v);
+    return 0;
+  }
+
+  function refreshAllMetricPanels() {
+    for (const p of state.metrics.panels) runMetricPanel(p);
+  }
+  function setupMetricsAutoRefresh() {
+    if (state.metrics.refreshTimer) {
+      clearInterval(state.metrics.refreshTimer);
+      state.metrics.refreshTimer = null;
+    }
+    const ms = parseInt($("#metrics-refresh").value, 10) || 0;
+    if (ms > 0) {
+      state.metrics.refreshTimer = setInterval(refreshAllMetricPanels, ms);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Phase E-2 — Logs explorer (search + live tail)
+  // ─────────────────────────────────────────────────────────────────
+  state.logs = { tail: null, rows: [] };
+
+  $("#logs-run").addEventListener("click", runLogsSearch);
+  $("#logs-tail").addEventListener("click", toggleLogsTail);
+
+  async function runLogsSearch() {
+    if (state.logs.tail) toggleLogsTail(); // stop tail first
+    const tbody = $("#logs-table tbody");
+    tbody.innerHTML = "";
+    const tenant = $("#logs-tenant").value.trim();
+    const service = $("#logs-service").value.trim();
+    const sev = $("#logs-severity").value;
+    const search = $("#logs-search").value.trim();
+    const where = ["1=1"];
+    if (service) where.push(`service_name = '${sqlEscape(service)}'`);
+    if (sev) where.push(`severity = '${sev}'`);
+    if (search) where.push(`positionCaseInsensitive(body, '${sqlEscape(search)}') > 0`);
+    const query = `select timestamp, severity, service_name, body, trace_id, span_id, attributes
+      from logs where ${where.join(" and ")} and timestamp >= now() - INTERVAL 1 HOUR
+      order by timestamp desc limit 500`;
+    try {
+      const headers = { "Content-Type": "application/json", "X-Tenant-ID": tenant };
+      if (state.token) headers["Authorization"] = "Bearer " + state.token;
+      const r = await fetch("/api/query/v1/query", {
+        method: "POST", headers, body: JSON.stringify({ query }),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const rows = await readNDJSON(r);
+      renderLogRows(rows);
+    } catch (err) {
+      tbody.innerHTML = `<tr><td colspan="4" style="color:var(--err)">${escapeHTML(err.message)}</td></tr>`;
+    }
+  }
+
+  function renderLogRows(rows) {
+    const tbody = $("#logs-table tbody");
+    tbody.innerHTML = "";
+    if (!rows.length) {
+      $("#logs-empty").style.display = "block";
+      return;
+    }
+    $("#logs-empty").style.display = "none";
+    state.logs.rows = rows;
+    // Virtualization: render in 200-row chunks via requestAnimationFrame
+    // so a 500-row search doesn't block the UI thread.
+    let i = 0;
+    const chunk = 200;
+    function pump() {
+      const slice = rows.slice(i, i + chunk);
+      const frag = document.createDocumentFragment();
+      for (const row of slice) frag.appendChild(makeLogRow(row));
+      tbody.appendChild(frag);
+      i += chunk;
+      if (i < rows.length) requestAnimationFrame(pump);
+    }
+    pump();
+  }
+
+  function makeLogRow(row) {
+    const tr = document.createElement("tr");
+    tr.className = "row-clickable";
+    const sev = String(row.severity || "").toUpperCase();
+    tr.innerHTML = `
+      <td class="time">${escapeHTML(formatTimestamp(row.timestamp))}</td>
+      <td class="sev ${sev}">${escapeHTML(sev)}</td>
+      <td>${escapeHTML(row.service_name || "")}</td>
+      <td class="body">${escapeHTML(row.body || "")}</td>`;
+    tr.addEventListener("click", () => {
+      const expanded = tr.classList.toggle("expand");
+      const bodyTd = tr.querySelector(".body");
+      if (expanded) {
+        const detail = {
+          trace_id: row.trace_id || "",
+          span_id: row.span_id || "",
+          attributes: row.attributes || {},
+        };
+        bodyTd.innerHTML = `${escapeHTML(row.body || "")}<pre>${escapeHTML(JSON.stringify(detail, null, 2))}</pre>`;
+      } else {
+        bodyTd.textContent = row.body || "";
+      }
+    });
+    return tr;
+  }
+
+  async function toggleLogsTail() {
+    if (state.logs.tail) {
+      state.logs.tail.abort();
+      state.logs.tail = null;
+      $("#logs-tail-status").textContent = "offline";
+      $("#logs-tail-status").classList.remove("live");
+      $("#logs-tail").textContent = "Live tail";
+      return;
+    }
+    const tenant = $("#logs-tenant").value.trim();
+    const service = $("#logs-service").value.trim();
+    const sev = $("#logs-severity").value;
+    const q = new URLSearchParams({ tenant_id: tenant });
+    if (service) q.set("service", service);
+    if (sev) q.set("severity", sev);
+    const ctrl = new AbortController();
+    state.logs.tail = ctrl;
+    $("#logs-tail-status").textContent = "live";
+    $("#logs-tail-status").classList.add("live");
+    $("#logs-tail").textContent = "Stop tail";
+    const tbody = $("#logs-table tbody");
+    try {
+      const r = await fetch("/api/query/v1/logs/stream?" + q.toString(), {
+        signal: ctrl.signal,
+        headers: state.token ? { "Authorization": "Bearer " + state.token } : {},
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
+          const evt = parseSSE(frame);
+          if (!evt || evt.event === "heartbeat") continue;
+          // Prepend so newest is at the top, cap to 500.
+          const tr = makeLogRow(evt.data);
+          tbody.insertBefore(tr, tbody.firstChild);
+          while (tbody.children.length > 500) tbody.removeChild(tbody.lastChild);
+          $("#logs-empty").style.display = "none";
+        }
+      }
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        tbody.insertAdjacentHTML("afterbegin",
+          `<tr><td colspan="4" style="color:var(--err)">tail error: ${escapeHTML(err.message)}</td></tr>`);
+      }
+    } finally {
+      state.logs.tail = null;
+      $("#logs-tail-status").textContent = "offline";
+      $("#logs-tail-status").classList.remove("live");
+      $("#logs-tail").textContent = "Live tail";
+    }
+  }
+
+  function sqlEscape(s) { return String(s).replace(/'/g, "''"); }
+  function formatTimestamp(s) {
+    if (!s) return "";
+    try { return new Date(s).toISOString().replace("T", " ").replace("Z", ""); }
+    catch { return String(s); }
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Phase E-3 — Traces
+  // ─────────────────────────────────────────────────────────────────
+  state.traces = { selected: null, spans: [] };
+
+  $("#traces-search").addEventListener("click", runTracesSearch);
+
+  async function runTracesSearch() {
+    const tbody = $("#traces-table tbody");
+    tbody.innerHTML = "";
+    const tenant = $("#traces-tenant").value.trim();
+    const service = $("#traces-service").value.trim();
+    const minMs = parseInt($("#traces-min-ms").value, 10) || 0;
+    const rangeMs = parseInt($("#traces-range").value, 10) || 3_600_000;
+    const since = `now() - INTERVAL ${Math.ceil(rangeMs / 1000)} SECOND`;
+    const where = [`start_time >= ${since}`];
+    if (service) where.push(`service_name = '${sqlEscape(service)}'`);
+    if (minMs > 0) where.push(`duration_ns >= ${minMs * 1_000_000}`);
+    const query = `select trace_id, service_name, operation_name, start_time, duration_ns, status_code
+      from traces where ${where.join(" and ")}
+      order by start_time desc limit 200`;
+    try {
+      const headers = { "Content-Type": "application/json", "X-Tenant-ID": tenant };
+      if (state.token) headers["Authorization"] = "Bearer " + state.token;
+      const r = await fetch("/api/query/v1/query", {
+        method: "POST", headers, body: JSON.stringify({ query }),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const rows = await readNDJSON(r);
+      if (!rows.length) { $("#traces-empty").style.display = "block"; return; }
+      $("#traces-empty").style.display = "none";
+      for (const t of rows) {
+        const tr = document.createElement("tr");
+        tr.className = "row-clickable";
+        const sc = String(t.status_code || "OK");
+        tr.innerHTML = `
+          <td class="time">${escapeHTML(formatTimestamp(t.start_time))}</td>
+          <td>${escapeHTML(t.service_name || "")}</td>
+          <td>${escapeHTML(t.operation_name || "")}</td>
+          <td>${(+(t.duration_ns || 0) / 1e6).toFixed(2)} ms</td>
+          <td><span class="state-${sc === "OK" ? "resolved" : "firing"}">${escapeHTML(sc)}</span></td>`;
+        tr.addEventListener("click", () => {
+          $$("#traces-table tr").forEach((row) => row.classList.remove("selected"));
+          tr.classList.add("selected");
+          loadTraceDetail(tenant, t.trace_id);
+        });
+        tbody.appendChild(tr);
+      }
+    } catch (err) {
+      tbody.innerHTML = `<tr><td colspan="5" style="color:var(--err)">${escapeHTML(err.message)}</td></tr>`;
+    }
+  }
+
+  async function loadTraceDetail(tenant, traceID) {
+    state.traces.selected = traceID;
+    $("#trace-detail-title").textContent = "Waterfall · " + traceID;
+    const query = `select trace_id, span_id, parent_span_id, service_name, operation_name,
+      start_time, end_time, duration_ns, status_code, attributes
+      from traces where trace_id = '${sqlEscape(traceID)}'
+      order by start_time asc`;
+    try {
+      const headers = { "Content-Type": "application/json", "X-Tenant-ID": tenant };
+      if (state.token) headers["Authorization"] = "Bearer " + state.token;
+      const r = await fetch("/api/query/v1/query", {
+        method: "POST", headers, body: JSON.stringify({ query }),
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const spans = await readNDJSON(r);
+      state.traces.spans = spans;
+      renderWaterfall(document.getElementById("trace-waterfall"), spans);
+      renderServiceMap(document.getElementById("trace-servicemap"), spans);
+    } catch (err) {
+      document.getElementById("trace-waterfall").innerHTML =
+        `<div style="color:var(--err)">${escapeHTML(err.message)}</div>`;
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Phase E-4 — Dashboards (save / load / share)
+  // ─────────────────────────────────────────────────────────────────
+  state.dash = { current: null };
+
+  $("#dash-new").addEventListener("click", () => {
+    const name = prompt("Dashboard name?");
+    if (!name) return;
+    state.dash.current = { id: null, name, panels: [] };
+    saveCurrentDashboard();
+  });
+  $("#dash-refresh").addEventListener("click", loadDashboards);
+  $("#dash-export").addEventListener("click", exportCurrentDashboard);
+  $("#dash-import").addEventListener("click", importDashboardFromPrompt);
+  $("#dash-share").addEventListener("click", shareCurrentDashboard);
+
+  async function loadDashboards() {
+    const tbody = $("#dashboards-table tbody");
+    tbody.innerHTML = "";
+    const tenant = $("#dash-tenant").value.trim();
+    if (!tenant) { $("#dashboards-empty").style.display = "block"; return; }
+    try {
+      const data = await api(`/api/tenant/v1/dashboards?tenant_id=${encodeURIComponent(tenant)}`);
+      const rows = data.dashboards || [];
+      if (!rows.length) { $("#dashboards-empty").style.display = "block"; return; }
+      $("#dashboards-empty").style.display = "none";
+      for (const d of rows) {
+        const tr = document.createElement("tr");
+        const panelCount = (d.layout && d.layout.panels || []).length;
+        tr.innerHTML = `
+          <td><a href="#dash=${d.id}">${escapeHTML(d.name)}</a></td>
+          <td>${panelCount}</td>
+          <td>${escapeHTML(d.updated_at || "")}</td>
+          <td class="dash-actions">
+            <button data-act="open">Open</button>
+            <button data-act="delete">Delete</button>
+          </td>`;
+        tr.querySelector('[data-act="open"]').addEventListener("click", () => openDashboard(d));
+        tr.querySelector('[data-act="delete"]').addEventListener("click", () => deleteDashboard(d));
+        tbody.appendChild(tr);
+      }
+    } catch (err) {
+      tbody.innerHTML = `<tr><td colspan="4" style="color:var(--err)">${escapeHTML(err.message)}</td></tr>`;
+    }
+  }
+
+  function openDashboard(d) {
+    state.dash.current = d;
+    // Switch to metrics tab and load panels.
+    $('.tab[data-tab="metrics"]').click();
+    while (state.metrics.panels.length) removeMetricPanel(state.metrics.panels[0]);
+    for (const p of (d.layout && d.layout.panels) || []) addMetricPanel(p);
+  }
+
+  async function deleteDashboard(d) {
+    if (!confirm("Delete dashboard " + d.name + "?")) return;
+    try {
+      await api(`/api/tenant/v1/dashboards/${encodeURIComponent(d.id)}`, { method: "DELETE" });
+      loadDashboards();
+    } catch (err) { alert("delete failed: " + err.message); }
+  }
+
+  async function saveCurrentDashboard() {
+    if (!state.dash.current) return;
+    const tenant = $("#dash-tenant").value.trim() || $("#metrics-tenant").value.trim();
+    if (!tenant) { alert("Tenant required to save"); return; }
+    const payload = {
+      tenant_id: tenant,
+      name: state.dash.current.name,
+      layout: {
+        panels: state.metrics.panels.map((p) => ({
+          title: p.title, query: p.query,
+        })),
+      },
+    };
+    try {
+      let r;
+      if (state.dash.current.id) {
+        r = await api(`/api/tenant/v1/dashboards/${encodeURIComponent(state.dash.current.id)}`,
+                      { method: "PUT", body: JSON.stringify(payload) });
+      } else {
+        r = await api("/api/tenant/v1/dashboards",
+                      { method: "POST", body: JSON.stringify(payload) });
+        state.dash.current.id = r.id;
+      }
+      loadDashboards();
+    } catch (err) { alert("save failed: " + err.message); }
+  }
+
+  function exportCurrentDashboard() {
+    const payload = {
+      name: state.dash.current?.name || "untitled",
+      layout: {
+        panels: state.metrics.panels.map((p) => ({ title: p.title, query: p.query })),
+      },
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = (payload.name || "dashboard") + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function importDashboardFromPrompt() {
+    const json = prompt("Paste dashboard JSON:");
+    if (!json) return;
+    try {
+      const d = JSON.parse(json);
+      state.dash.current = { id: null, name: d.name || "imported", panels: d.layout?.panels || [] };
+      while (state.metrics.panels.length) removeMetricPanel(state.metrics.panels[0]);
+      for (const p of d.layout?.panels || []) addMetricPanel(p);
+      $('.tab[data-tab="metrics"]').click();
+    } catch (err) { alert("import failed: " + err.message); }
+  }
+
+  function shareCurrentDashboard() {
+    const id = state.dash.current?.id;
+    if (!id) { alert("Save the dashboard first to get a shareable link."); return; }
+    const url = location.origin + "/#dash=" + encodeURIComponent(id);
+    navigator.clipboard?.writeText(url);
+    alert("Share link copied:\n" + url);
+  }
+
+  function tryOpenFromHash() {
+    const m = location.hash.match(/dash=([^&]+)/);
+    if (!m) return;
+    const id = decodeURIComponent(m[1]);
+    api(`/api/tenant/v1/dashboards/${encodeURIComponent(id)}`)
+      .then(openDashboard)
+      .catch((err) => console.warn("hash open failed", err));
+  }
+
   // ── Boot ──────────────────────────────────────────────────────────
   function escapeHTML(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({
       "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
     }[c]));
   }
-  function refreshAll() { loadTenants(); loadAlerts(); loadAudit(); }
+  function refreshAll() { loadTenants(); loadAlerts(); loadAudit(); loadDashboards(); }
 
   (async () => {
     try {
@@ -340,9 +900,15 @@
     if (await completePKCEIfPresent()) {
       renderAuth();
       refreshAll();
+      setupMetricsAutoRefresh();
+      tryOpenFromHash();
       return;
     }
     renderAuth();
-    if (state.token) refreshAll();
+    if (state.token) {
+      refreshAll();
+      tryOpenFromHash();
+    }
+    setupMetricsAutoRefresh();
   })();
 })();
