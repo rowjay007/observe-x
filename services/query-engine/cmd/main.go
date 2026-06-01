@@ -19,10 +19,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -33,6 +35,7 @@ import (
 	"github.com/rowjay007/observe-x/pkg/observability"
 	"github.com/rowjay007/observe-x/pkg/observeql"
 	"github.com/rowjay007/observe-x/pkg/selfobs"
+	"github.com/rowjay007/observe-x/pkg/parquetexport"
 	chstorage "github.com/rowjay007/observe-x/pkg/storage/clickhouse"
 	"github.com/rowjay007/observe-x/services/query-engine/internal/executor"
 )
@@ -126,6 +129,10 @@ func buildRouter(authMW *auth.AuthMiddleware, exec *executor.Executor, logger *z
 	// Phase C-3a: query endpoint requires the explicit `query` scope.
 	// An ingest-only key (the default) cannot read data.
 	authorized.POST("/v1/query", auth.GinRequireScope(auth.ScopeQuery), queryHandler(exec, logger))
+	// Phase D-8: Parquet export endpoint. Same query body, response
+	// is application/x-parquet streamed inline. Operators commonly
+	// pipe into `aws s3 cp - s3://bucket/key.parquet`.
+	authorized.POST("/v1/export", auth.GinRequireScope(auth.ScopeQuery), exportHandler(exec, logger))
 
 	return r
 }
@@ -189,6 +196,22 @@ func queryHandler(exec *executor.Executor, logger *zap.Logger) gin.HandlerFunc {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
 		defer cancel()
 
+		// Phase D-6: content-negotiate Arrow IPC vs NDJSON. Clients
+		// that want columnar throughput send
+		//   Accept: application/vnd.apache.arrow.stream
+		// (recognised by Polars, Pandas, DuckDB out of the box).
+		// Everyone else gets the NDJSON path.
+		acc := c.GetHeader("Accept")
+		if strings.Contains(acc, executor.ArrowMediaType) {
+			c.Writer.Header().Set("Content-Type", executor.ArrowMediaType)
+			c.Writer.WriteHeader(http.StatusOK)
+			if _, err := exec.ExecuteArrow(ctx, plan, c.Writer); err != nil {
+				logger.Warn("query execute (arrow)",
+					zap.String("tenant", tenantID), zap.Error(err))
+			}
+			return
+		}
+
 		c.Writer.Header().Set("Content-Type", "application/x-ndjson")
 		c.Writer.WriteHeader(http.StatusOK)
 
@@ -203,6 +226,78 @@ func queryHandler(exec *executor.Executor, logger *zap.Logger) gin.HandlerFunc {
 			})
 		}
 	}
+}
+
+// ─── Parquet export handler (Phase D-8, ADR-0025) ────────────────────────
+
+func exportHandler(exec *executor.Executor, logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		tenantID := c.Request.Header.Get("X-Tenant-ID")
+		if tenantID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing tenant id"})
+			return
+		}
+		var req queryReq
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		ast, err := observeql.Parse(req.Query)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		plan, err := observeql.PlanQuery(ast, observeql.PlannerOptions{
+			TenantID:    tenantID,
+			MaxRowLimit: req.MaxRows,
+		})
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		// Parquet exports are typically larger than queries — bump
+		// the default ceiling but still cap at 10 minutes.
+		timeout := 5 * time.Minute
+		if req.TimeoutSecs > 0 && req.TimeoutSecs < 600 {
+			timeout = time.Duration(req.TimeoutSecs) * time.Second
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+		defer cancel()
+
+		rows, err := exec.QueryRows(ctx, plan)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.Writer.Header().Set("Content-Type", "application/x-parquet")
+		c.Writer.Header().Set("Content-Disposition",
+			`attachment; filename="observex-`+tenantID+`.parquet"`)
+		c.Writer.WriteHeader(http.StatusOK)
+
+		src := &sliceRowSource{rows: rows}
+		if _, err := parquetexport.Write(ctx, src, c.Writer, parquetexport.Options{}); err != nil {
+			logger.Warn("parquet export", zap.String("tenant", tenantID), zap.Error(err))
+		}
+	}
+}
+
+// sliceRowSource adapts the in-memory result slice into the
+// parquetexport.RowSource interface. The executor presently
+// materialises the full result set in memory; a future streaming
+// row iterator on the executor would let us swap this out
+// without touching the handler.
+type sliceRowSource struct {
+	rows []map[string]any
+	idx  int
+}
+
+func (s *sliceRowSource) Next(ctx context.Context) (map[string]any, error) {
+	if s.idx >= len(s.rows) {
+		return nil, io.EOF
+	}
+	r := s.rows[s.idx]
+	s.idx++
+	return r, nil
 }
 
 // ─── env helpers / KeyStore wiring (same shape as ingest-gateway) ───────

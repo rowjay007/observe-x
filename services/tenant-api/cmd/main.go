@@ -24,10 +24,14 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+
 	"github.com/rowjay007/observe-x/pkg/auditlog"
 	"github.com/rowjay007/observe-x/pkg/auth"
 	"github.com/rowjay007/observe-x/pkg/observability"
 	"github.com/rowjay007/observe-x/pkg/oidc"
+	"github.com/rowjay007/observe-x/pkg/retention"
 	"github.com/rowjay007/observe-x/pkg/selfobs"
 	"github.com/rowjay007/observe-x/services/tenant-api/store"
 )
@@ -104,6 +108,30 @@ func main() {
 			zap.Strings("admin_groups", adminGroups))
 	}
 
+	// Phase D-2: optional ClickHouse connection for per-tenant
+	// retention overrides (ADR-0019). When unset, the PUT
+	// /v1/tenants/:id/retention endpoint returns 501 Not
+	// Implemented; tenant CRUD stays fully functional.
+	var chConn driver.Conn
+	if addr := os.Getenv("OBSERVE_X_CLICKHOUSE_ADDR"); addr != "" {
+		c, err := clickhouse.Open(&clickhouse.Options{
+			Addr: []string{addr},
+			Auth: clickhouse.Auth{
+				Database: getEnv("OBSERVE_X_CLICKHOUSE_DB", "observex"),
+				Username: getEnv("OBSERVE_X_CLICKHOUSE_USER", "default"),
+				Password: os.Getenv("OBSERVE_X_CLICKHOUSE_PASS"),
+			},
+			DialTimeout: 5 * time.Second,
+		})
+		if err != nil {
+			logger.Warn("clickhouse: open failed; retention API will return 501",
+				zap.Error(err))
+		} else {
+			chConn = c
+			defer func() { _ = c.Close() }()
+		}
+	}
+
 	srv := &server{
 		logger:     logger,
 		adminToken: adminToken,
@@ -111,6 +139,7 @@ func main() {
 		repo:       repo,
 		keyStore:   keyStore,
 		auditExp:   auditExp,
+		chConn:     chConn,
 	}
 
 	router := srv.router()
@@ -148,6 +177,7 @@ type server struct {
 	repo       *store.Store
 	keyStore   *auth.PostgresKeyStore
 	auditExp   auditlog.Exporter
+	chConn     driver.Conn // nil ⇒ retention endpoint returns 501
 	once       sync.Once
 }
 
@@ -171,6 +201,13 @@ func (s *server) router() http.Handler {
 		admin.GET("/tenants/:id/api-keys", s.listAPIKeys)
 		admin.POST("/tenants/:id/api-keys", s.issueAPIKey)
 		admin.DELETE("/tenants/:id/api-keys/:kid", s.revokeAPIKey)
+
+		// Phase D-2: per-tenant retention overrides (ADR-0019).
+		admin.PUT("/tenants/:id/retention", s.putRetention)
+		admin.DELETE("/tenants/:id/retention", s.dropRetention)
+
+		// Phase D-4: read-only audit log (ADR-0021).
+		admin.GET("/audit", s.listAudit)
 	}
 	return r
 }
@@ -354,6 +391,89 @@ func (s *server) revokeAPIKey(c *gin.Context) {
 		return
 	}
 	s.audit(c, &tenantID, "admin", "api_key.revoke", map[string]any{"kid": kid})
+	c.Status(http.StatusNoContent)
+}
+
+// ─── handlers: audit (Phase D-4, ADR-0021) ───────────────────────────────
+
+func (s *server) listAudit(c *gin.Context) {
+	tenantID := c.Query("tenant_id")
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	records, err := s.repo.ListAudit(c.Request.Context(), tenantID, limit)
+	if err != nil {
+		s.logger.Warn("audit list", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"records": records})
+}
+
+// ─── handlers: retention (Phase D-2, ADR-0019) ───────────────────────────
+
+type retentionReq struct {
+	MetricsHotDays   int `json:"metrics_hot_days"`
+	MetricsTotalDays int `json:"metrics_total_days"`
+	LogsHotDays      int `json:"logs_hot_days"`
+	LogsTotalDays    int `json:"logs_total_days"`
+	TracesHotDays    int `json:"traces_hot_days"`
+	TracesTotalDays  int `json:"traces_total_days"`
+}
+
+func (s *server) putRetention(c *gin.Context) {
+	if s.chConn == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{
+			"error": "retention API requires OBSERVE_X_CLICKHOUSE_ADDR on tenant-api",
+		})
+		return
+	}
+	tenantID := c.Param("id")
+	// Cross-check the tenant exists before issuing DDL — fail fast
+	// with 404 rather than emitting an ALTER for a phantom tenant.
+	if _, err := s.repo.GetTenant(c.Request.Context(), tenantID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "tenant not found"})
+		return
+	}
+	var req retentionReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	spec := retention.Spec{
+		TenantID:         tenantID,
+		MetricsHotDays:   req.MetricsHotDays,
+		MetricsTotalDays: req.MetricsTotalDays,
+		LogsHotDays:      req.LogsHotDays,
+		LogsTotalDays:    req.LogsTotalDays,
+		TracesHotDays:    req.TracesHotDays,
+		TracesTotalDays:  req.TracesTotalDays,
+	}
+	if err := retention.Apply(c.Request.Context(), s.chConn, spec); err != nil {
+		s.logger.Warn("retention apply", zap.String("tenant", tenantID), zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	s.audit(c, &tenantID, "admin", "retention.update", map[string]any{
+		"metrics_hot_days": req.MetricsHotDays, "metrics_total_days": req.MetricsTotalDays,
+		"logs_hot_days": req.LogsHotDays, "logs_total_days": req.LogsTotalDays,
+		"traces_hot_days": req.TracesHotDays, "traces_total_days": req.TracesTotalDays,
+	})
+	c.JSON(http.StatusOK, gin.H{"status": "applied", "tenant_id": tenantID})
+}
+
+func (s *server) dropRetention(c *gin.Context) {
+	if s.chConn == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{
+			"error": "retention API requires OBSERVE_X_CLICKHOUSE_ADDR on tenant-api",
+		})
+		return
+	}
+	tenantID := c.Param("id")
+	if err := retention.Drop(c.Request.Context(), s.chConn, tenantID); err != nil {
+		s.logger.Warn("retention drop", zap.String("tenant", tenantID), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	s.audit(c, &tenantID, "admin", "retention.drop", nil)
 	c.Status(http.StatusNoContent)
 }
 

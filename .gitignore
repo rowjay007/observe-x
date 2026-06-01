@@ -1,0 +1,45 @@
+# ─── Build artefacts ──────────────────────────────────────────────────
+bin/
+dist/
+out/
+*.exe
+*.dll
+*.so
+*.dylib
+# Stray `go build ./...` output of the top-level `cmd` package:
+/cmd
+# Service binaries occasionally built locally during development:
+/ingest-gateway
+/tenant-api
+/query-engine
+/alert-manager
+/ml-anomaly-detector
+/cold-tier
+/ui-server
+
+# ─── Go test + coverage ───────────────────────────────────────────────
+*.test
+coverage.out
+coverage.html
+profile.out
+cpu.prof
+mem.prof
+trace.out
+
+# ─── IDE / editor ─────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# ─── Local secrets / runtime state ────────────────────────────────────
+.env
+.env.local
+*.local.yaml
+/var/
+/tmp/
+
+# ─── Docker / Kubernetes scratch ──────────────────────────────────────
+deploy/compose/.env
+kubeconfig.local

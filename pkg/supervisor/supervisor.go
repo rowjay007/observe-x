@@ -40,6 +40,7 @@ type Stats struct {
 	Quarantined   int
 	TotalRouted   int64
 	TotalDropped  int64
+	TotalSpilled  int64 // Phase D-7: mailbox-full signals that landed in NATS JS
 	TotalRestarts int64
 	LastHealthAt  time.Time
 }
@@ -60,6 +61,19 @@ type Options struct {
 	// The zero value is fine — actor.NewTenantActorWithOptions fills
 	// in its own defaults.
 	ActorOptions actor.Options
+	// Spillover, when non-nil, is consulted on mailbox-full. The
+	// supervisor calls Spill(tenantID, sig) before incrementing
+	// the drop counter; on Spill error the legacy drop path runs.
+	// Wire pkg/spillover.Spillover here in production.
+	// See ADR-0024.
+	Spillover Spiller
+}
+
+// Spiller is the supervisor's interface to a durable side-car.
+// Decoupled from pkg/spillover so the supervisor tests don't need
+// a live NATS connection.
+type Spiller interface {
+	Push(ctx context.Context, tenantID string, sig signal.Signal) error
 }
 
 func (o Options) withDefaults() Options {
@@ -106,6 +120,7 @@ type Supervisor struct {
 
 	totalRouted   atomic.Int64
 	totalDropped  atomic.Int64
+	totalSpilled  atomic.Int64
 	totalRestarts atomic.Int64
 
 	started  atomic.Bool
@@ -166,6 +181,19 @@ func (s *Supervisor) RouteToTenant(tenantID string, sig signal.Signal) {
 	case m.a.Mailbox() <- sig:
 		s.totalRouted.Add(1)
 	default:
+		// Phase D-7: mailbox full. If spillover is configured we
+		// try to durably queue; on spillover failure we fall back
+		// to the legacy drop. The drop counter only increments
+		// when BOTH paths fail so we don't punish spilled traffic.
+		if s.opts.Spillover != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			err := s.opts.Spillover.Push(ctx, tenantID, sig)
+			cancel()
+			if err == nil {
+				s.totalSpilled.Add(1)
+				return
+			}
+		}
 		s.totalDropped.Add(1)
 	}
 }
@@ -334,6 +362,7 @@ func (s *Supervisor) Stats() Stats {
 		Quarantined:   quarantined,
 		TotalRouted:   s.totalRouted.Load(),
 		TotalDropped:  s.totalDropped.Load(),
+		TotalSpilled:  s.totalSpilled.Load(),
 		TotalRestarts: s.totalRestarts.Load(),
 		LastHealthAt:  time.Unix(0, s.lastHealthAt.Load()),
 	}

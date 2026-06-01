@@ -80,10 +80,11 @@ func main() {
 
 	r.POST("/v1/observations", func(c *gin.Context) {
 		var req struct {
-			TenantID  string  `json:"tenant_id"`
-			Metric    string  `json:"metric"`
-			Value     float64 `json:"value"`
-			Timestamp string  `json:"timestamp,omitempty"`
+			TenantID  string    `json:"tenant_id"`
+			Metric    string    `json:"metric"`
+			Value     float64   `json:"value"`
+			Features  []float64 `json:"features,omitempty"` // Phase D-1: multi-feature
+			Timestamp string    `json:"timestamp,omitempty"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -102,7 +103,7 @@ func main() {
 		observations.Inc()
 		decision, err := predictor.Observe(c.Request.Context(), mlruntime.Sample{
 			TenantID: req.TenantID, Metric: req.Metric,
-			Value: req.Value, At: at,
+			Value: req.Value, Features: req.Features, At: at,
 		})
 		if err != nil {
 			logger.Warn("predict", zap.Error(err))
@@ -178,9 +179,13 @@ func buildPredictor(ctx context.Context, logger *zap.Logger) (mlruntime.Predicto
 		path := os.Getenv("OBSERVE_X_ML_MODEL_PATH")
 		threshold := envFloat("OBSERVE_X_ML_SCORE_THRESHOLD", 0.5)
 		input := getEnv("OBSERVE_X_ML_INPUT_NAME", "float_input")
-		logger.Info("predictor: onnx", zap.String("model", path))
+		features := envInt("OBSERVE_X_ML_INPUT_FEATURES", 1)
+		logger.Info("predictor: onnx",
+			zap.String("model", path), zap.Int("features", features))
 		return mlruntime.NewOnnxPredictor(ctx, mlruntime.OnnxOptions{
-			ModelPath: path, InputName: input, ScoreThreshold: threshold,
+			ModelPath: path, InputName: input,
+			InputFeatures:  features,
+			ScoreThreshold: threshold,
 		})
 	default:
 		return nil, fmt.Errorf("unknown OBSERVE_X_ML_MODEL %q (expected '', 'zscore', or 'onnx')", model)

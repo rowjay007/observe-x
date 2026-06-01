@@ -176,6 +176,63 @@ func (s *Store) WriteAudit(ctx context.Context, ev AuditEvent) error {
 	return nil
 }
 
+// AuditRecord is the read shape returned by ListAudit. Includes the
+// server-assigned id + created_at the writer doesn't carry.
+type AuditRecord struct {
+	ID        int64             `json:"id"`
+	TenantID  *string           `json:"tenant_id,omitempty"`
+	Actor     string            `json:"actor"`
+	Action    string            `json:"action"`
+	Details   map[string]any    `json:"details,omitempty"`
+	SourceIP  *string           `json:"source_ip,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+}
+
+// ListAudit returns the most recent audit entries, optionally
+// filtered by tenant. limit is clamped to [1, 500] to bound the
+// page size; callers that need pagination over many pages should
+// add a `before_id` parameter in a follow-up. For the operator UI
+// the latest-N pattern is sufficient.
+func (s *Store) ListAudit(ctx context.Context, tenantID string, limit int) ([]AuditRecord, error) {
+	if limit < 1 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	var rows pgx.Rows
+	var err error
+	if tenantID == "" {
+		rows, err = s.pool.Query(ctx, `
+			SELECT id, tenant_id, actor, action, details, source_ip, created_at
+			FROM tenant_audit_log
+			ORDER BY id DESC
+			LIMIT $1
+		`, limit)
+	} else {
+		rows, err = s.pool.Query(ctx, `
+			SELECT id, tenant_id, actor, action, details, source_ip, created_at
+			FROM tenant_audit_log
+			WHERE tenant_id = $1
+			ORDER BY id DESC
+			LIMIT $2
+		`, tenantID, limit)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: list audit: %w", err)
+	}
+	defer rows.Close()
+	out := []AuditRecord{}
+	for rows.Next() {
+		var r AuditRecord
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.Actor, &r.Action, &r.Details, &r.SourceIP, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // ─── helpers ──────────────────────────────────────────────────────────────
 
 // isUniqueViolation returns true if err is a Postgres unique-constraint

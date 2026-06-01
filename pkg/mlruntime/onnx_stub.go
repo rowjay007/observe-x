@@ -27,6 +27,10 @@ type OnnxOptions struct {
 	// InputName is the model's input tensor name (defaults vary by
 	// exporter; sklearn-onnx commonly emits "float_input").
 	InputName string
+	// InputFeatures is the number of float32s the model expects.
+	// Defaults to 1 (single-feature back-compat). Phase D-1: models
+	// with >1 feature read Sample.Features rather than Sample.Value.
+	InputFeatures int
 	// OutputIndex selects which output tensor contains the anomaly
 	// score (defaults to 0).
 	OutputIndex int

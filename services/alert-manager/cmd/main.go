@@ -103,7 +103,8 @@ func main() {
 		}
 	}()
 
-	router := buildRouter(authMW, st, dispatcher, evaluator, auditExp, logger)
+	hub := newSSEHub(64)
+	router := buildRouter(authMW, st, dispatcher, evaluator, auditExp, hub, logger)
 
 	srv := &http.Server{
 		Addr:         getEnv("OBSERVE_X_ALERT_ADDR", ":7700"),
@@ -134,7 +135,7 @@ func main() {
 // ─── Router ──────────────────────────────────────────────────────────────
 
 func buildRouter(authMW *auth.AuthMiddleware, st *store.Store, dispatcher *notifier.Dispatcher,
-	evaluator *sloburn.Evaluator, auditExp auditlog.Exporter, logger *zap.Logger) http.Handler {
+	evaluator *sloburn.Evaluator, auditExp auditlog.Exporter, hub *sseHub, logger *zap.Logger) http.Handler {
 
 	if os.Getenv("GIN_MODE") == "" {
 		gin.SetMode(gin.ReleaseMode)
@@ -155,9 +156,12 @@ func buildRouter(authMW *auth.AuthMiddleware, st *store.Store, dispatcher *notif
 	//   /v1/alerts         alert.read  — read-only listing
 	//   /v1/silences       alert.write — operators-suppress requires write
 	//   /v1/slos           tenant.admin — SLO definition is a control-plane mutation
-	authed.POST("/v1/events", auth.GinRequireScope(auth.ScopeAlertWrite), eventsHandler(st, dispatcher, logger))
-	authed.POST("/v1/observations", auth.GinRequireScope(auth.ScopeAlertWrite), observationsHandler(evaluator, st, dispatcher, logger))
+	authed.POST("/v1/events", auth.GinRequireScope(auth.ScopeAlertWrite), eventsHandler(st, dispatcher, hub, logger))
+	authed.POST("/v1/observations", auth.GinRequireScope(auth.ScopeAlertWrite), observationsHandler(evaluator, st, dispatcher, hub, logger))
 	authed.GET("/v1/alerts", auth.GinRequireScope(auth.ScopeAlertRead), listAlertsHandler(st))
+	// Phase D-3: live stream (SSE). Same alert.read scope; persistent
+	// connection that emits firing/resolved/notified/heartbeat events.
+	authed.GET("/v1/alerts/stream", auth.GinRequireScope(auth.ScopeAlertRead), streamAlertsHandler(hub))
 	authed.POST("/v1/silences", auth.GinRequireScope(auth.ScopeAlertWrite), createSilenceHandler(st, auditExp, logger))
 	authed.POST("/v1/slos", auth.GinRequireScope(auth.ScopeTenantAdmin), registerSLOHandler(evaluator, auditExp, logger))
 
@@ -189,7 +193,7 @@ type incomingEvent struct {
 	OccurredAt  string            `json:"occurred_at,omitempty"`
 }
 
-func eventsHandler(st *store.Store, dispatcher *notifier.Dispatcher, logger *zap.Logger) gin.HandlerFunc {
+func eventsHandler(st *store.Store, dispatcher *notifier.Dispatcher, hub *sseHub, logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tenantID := c.Request.Header.Get("X-Tenant-ID")
 		if tenantID == "" {
@@ -222,6 +226,10 @@ func eventsHandler(st *store.Store, dispatcher *notifier.Dispatcher, logger *zap
 			}
 			// Best-effort resolved notification (no dedup window check).
 			go dispatchResolved(context.Background(), dispatcher, tenantID, fp, req, now, logger)
+			// Phase D-3: broadcast the resolution to UI subscribers.
+			hub.Publish(sseEvent{TenantID: tenantID, Type: "alert.resolved",
+				Payload: gin.H{"fingerprint": fp, "rule_id": req.RuleID, "title": req.Title,
+					"resolved_at": now.UTC().Format(time.RFC3339Nano)}})
 			c.JSON(http.StatusAccepted, gin.H{"status": "resolved", "fingerprint": fp})
 			return
 		}
@@ -247,6 +255,13 @@ func eventsHandler(st *store.Store, dispatcher *notifier.Dispatcher, logger *zap
 		if newTransition && !silenced {
 			go dispatchFiring(context.Background(), dispatcher, st, tenantID, fp, req, now, logger)
 			dispatched = true
+			// Phase D-3: only emit on the firing edge so SSE
+			// subscribers see what alerting actually saw.
+			hub.Publish(sseEvent{TenantID: tenantID, Type: "alert.fired",
+				Payload: gin.H{"fingerprint": fp, "rule_id": req.RuleID,
+					"severity": req.Severity, "title": req.Title,
+					"description": req.Description, "labels": req.Labels,
+					"started_at": occurredAt.UTC().Format(time.RFC3339Nano)}})
 		}
 
 		c.JSON(http.StatusAccepted, gin.H{
@@ -299,7 +314,7 @@ type observationReq struct {
 }
 
 func observationsHandler(eval *sloburn.Evaluator, st *store.Store,
-	dispatcher *notifier.Dispatcher, logger *zap.Logger) gin.HandlerFunc {
+	dispatcher *notifier.Dispatcher, hub *sseHub, logger *zap.Logger) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tenantID := c.Request.Header.Get("X-Tenant-ID")
 		if tenantID == "" {
@@ -339,6 +354,11 @@ func observationsHandler(eval *sloburn.Evaluator, st *store.Store,
 					Title: "SLO burning: " + req.SLO, Description: formatBurnDescription(d),
 					Labels: labels,
 				}, time.Now().UTC(), logger)
+				hub.Publish(sseEvent{TenantID: tenantID, Type: "alert.fired",
+					Payload: gin.H{"fingerprint": fp, "rule_id": "slo:" + req.SLO,
+						"severity": string(d.Severity), "title": "SLO burning: " + req.SLO,
+						"description": formatBurnDescription(d), "labels": labels,
+						"started_at": time.Now().UTC().Format(time.RFC3339Nano)}})
 			}
 		}
 		c.JSON(http.StatusOK, gin.H{

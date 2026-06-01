@@ -4,9 +4,34 @@ Distributed observability and APM platform written in Go. Self-hosted,
 multi-tenant ingestion, processing, storage, and query engine for
 metrics, logs, traces, and profiling data.
 
-> **Status — v1.0 production-ready.** Phase A + Phase B + Phase C
-> (slices 1, 2, 3a, 3b, 4) are all complete. On top of every previous
-> milestone, this release adds:
+> **Status — v1.0 production-ready (Phase D shipped).** Phase A +
+> Phase B + Phase C (slices 1, 2, 3a, 3b, 4) + Phase D (slices 1‑10)
+> are all complete. Phase D adds:
+>
+> - **Multi-feature ML inference** via `Sample.Features []float64`
+>   ([ADR-0018](./docs/adr/0018-multi-feature-ml-input.md));
+> - **Per-tenant cold-tier retention** through
+>   `PUT /v1/tenants/:id/retention` on tenant-api
+>   ([ADR-0019](./docs/adr/0019-per-tenant-retention.md));
+> - **Live alert SSE stream** at `GET /v1/alerts/stream`
+>   ([ADR-0020](./docs/adr/0020-alert-sse-stream.md));
+> - **Operator audit aggregation** UI tab + `GET /v1/audit`
+>   ([ADR-0021](./docs/adr/0021-operator-audit-aggregation.md));
+> - **Browser PKCE OIDC** sign-in for the operator console
+>   ([ADR-0022](./docs/adr/0022-pkce-oidc-browser.md));
+> - **Arrow IPC** codec for `POST /v1/query` via content
+>   negotiation ([ADR-0023](./docs/adr/0023-arrow-ipc-codec.md));
+> - **NATS JetStream spillover** for the supervisor — bounded
+>   mailbox + durable side-car
+>   ([ADR-0024](./docs/adr/0024-nats-spillover.md));
+> - **Parquet cold-tier export** from query-engine
+>   ([ADR-0025](./docs/adr/0025-parquet-cold-tier-export.md));
+> - **CBO skeleton** in `pkg/observeql`
+>   ([ADR-0026](./docs/adr/0026-observeql-cbo.md));
+> - **Federated S3 + DuckDB executor seam**
+>   ([ADR-0027](./docs/adr/0027-federated-duckdb-executor.md)).
+>
+> Phase C still ships everything below:
 >
 > - **Operator OIDC** in front of every tenant-api admin endpoint
 >   (`pkg/oidc` — JWKS auto-refresh, group-allowlist RBAC, fails

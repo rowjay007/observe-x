@@ -79,6 +79,28 @@ func TestErrUnsupportedSentinel(t *testing.T) {
 	}
 }
 
+func TestSampleFeatureVectorBackCompat(t *testing.T) {
+	// Legacy single-feature path: Features nil ⇒ [Value].
+	s := Sample{Value: 7.5}
+	got := s.FeatureVector()
+	if len(got) != 1 || got[0] != 7.5 {
+		t.Errorf("legacy path: %v", got)
+	}
+	// Multi-feature path: Features wins.
+	s2 := Sample{Value: 1, Features: []float64{10, 20, 30}}
+	got2 := s2.FeatureVector()
+	if len(got2) != 3 || got2[0] != 10 || got2[2] != 30 {
+		t.Errorf("multi path: %v", got2)
+	}
+	// Empty Features slice is treated as "explicit zero features"
+	// — predictors that require >0 features will error.
+	s3 := Sample{Value: 1, Features: []float64{}}
+	got3 := s3.FeatureVector()
+	if len(got3) != 0 {
+		t.Errorf("explicit empty: %v", got3)
+	}
+}
+
 func TestZScorePredictorSeriesCount(t *testing.T) {
 	p := NewZScorePredictor(ZScoreOptions{})
 	ctx := context.Background()

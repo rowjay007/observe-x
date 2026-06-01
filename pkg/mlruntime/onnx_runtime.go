@@ -56,6 +56,9 @@ func NewOnnxPredictor(ctx context.Context, opts OnnxOptions) (Predictor, error) 
 	if opts.InputName == "" {
 		opts.InputName = "float_input"
 	}
+	if opts.InputFeatures <= 0 {
+		opts.InputFeatures = 1
+	}
 
 	libPath := os.Getenv("OBSERVE_X_ML_MODEL_LIB")
 	if libPath != "" {
@@ -65,7 +68,7 @@ func NewOnnxPredictor(ctx context.Context, opts OnnxOptions) (Predictor, error) 
 		return nil, fmt.Errorf("mlruntime/onnx: init: %w", err)
 	}
 
-	inputTensor, err := ort.NewEmptyTensor[float32](ort.NewShape(1, 1))
+	inputTensor, err := ort.NewEmptyTensor[float32](ort.NewShape(1, int64(opts.InputFeatures)))
 	if err != nil {
 		return nil, fmt.Errorf("mlruntime/onnx: input tensor: %w", err)
 	}
@@ -107,7 +110,18 @@ func (p *onnxPredictor) Observe(_ context.Context, s Sample) (Decision, error) {
 	defer p.mu.Unlock()
 
 	data := p.input.GetData()
-	data[0] = float32(s.Value)
+	feats := s.FeatureVector()
+	// Pad/truncate to the configured input width. A
+	// dimension mismatch at inference would crash the session;
+	// truncation is preferable to the alternative.
+	width := len(data)
+	for i := 0; i < width; i++ {
+		if i < len(feats) {
+			data[i] = float32(feats[i])
+		} else {
+			data[i] = 0
+		}
+	}
 
 	if err := p.session.Run(); err != nil {
 		return Decision{}, fmt.Errorf("mlruntime/onnx: run: %w", err)

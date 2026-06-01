@@ -1,6 +1,8 @@
 package supervisor
 
 import (
+	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -133,6 +135,69 @@ func TestSupervisorQuarantinesAfterRestartFlood(t *testing.T) {
 	a := sup.GetOrCreateActor("flaky")
 	if a == nil || !a.IsRunning() {
 		t.Fatalf("release-quarantine did not allow fresh actor")
+	}
+}
+
+// Phase D-7: full mailbox + spillover succeeds ⇒ spilled++, dropped untouched.
+type fakeSpiller struct {
+	calls atomic.Int64
+	fail  bool
+}
+
+func (f *fakeSpiller) Push(_ context.Context, _ string, _ signal.Signal) error {
+	f.calls.Add(1)
+	if f.fail {
+		return errors.New("simulated")
+	}
+	return nil
+}
+
+func TestRouteSpillsWhenMailboxFull(t *testing.T) {
+	sp := &fakeSpiller{}
+	sup := NewSupervisorWithOptions(Options{
+		MailboxSize: 1,
+		Spillover:   sp,
+	})
+	sup.Start()
+	defer sup.Stop()
+
+	// Don't start a real actor draining; the first signal fills the
+	// mailbox, the second should spill.
+	tenant := "press"
+	sup.RouteToTenant(tenant, signal.Signal{TenantID: tenant, Type: signal.Log})
+	sup.RouteToTenant(tenant, signal.Signal{TenantID: tenant, Type: signal.Log})
+
+	// Wait for actor processing to enqueue.
+	time.Sleep(50 * time.Millisecond)
+
+	st := sup.Stats()
+	if sp.calls.Load() < 1 {
+		t.Errorf("spiller never invoked: %d calls", sp.calls.Load())
+	}
+	// dropped should still be 0 because spillover succeeded.
+	if st.TotalDropped != 0 {
+		t.Errorf("dropped should be 0 when spillover succeeds, got %d", st.TotalDropped)
+	}
+}
+
+func TestRouteFallsBackToDropOnSpillerError(t *testing.T) {
+	sp := &fakeSpiller{fail: true}
+	sup := NewSupervisorWithOptions(Options{
+		MailboxSize: 1,
+		Spillover:   sp,
+	})
+	sup.Start()
+	defer sup.Stop()
+
+	tenant := "press2"
+	sup.RouteToTenant(tenant, signal.Signal{TenantID: tenant, Type: signal.Log})
+	sup.RouteToTenant(tenant, signal.Signal{TenantID: tenant, Type: signal.Log})
+
+	time.Sleep(50 * time.Millisecond)
+
+	st := sup.Stats()
+	if st.TotalDropped == 0 {
+		t.Errorf("expected drop when spillover errors")
 	}
 }
 

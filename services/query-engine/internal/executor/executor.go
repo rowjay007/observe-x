@@ -22,6 +22,16 @@ type Executor struct {
 	client *chstorage.Client
 }
 
+// QueryRows runs the plan and returns the materialised result set.
+// Exposed for callers (Parquet export, future federated executor)
+// that don't want the NDJSON wire framing.
+func (e *Executor) QueryRows(ctx context.Context, plan *observeql.Plan) ([]map[string]any, error) {
+	if plan == nil {
+		return nil, fmt.Errorf("executor: nil plan")
+	}
+	return e.client.Query(ctx, plan.SQL, plan.Params...)
+}
+
 func New(client *chstorage.Client) *Executor {
 	return &Executor{client: client}
 }

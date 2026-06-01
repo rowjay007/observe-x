@@ -22,6 +22,8 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/json"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httputil"
@@ -51,6 +53,12 @@ type config struct {
 	OIDCIssuer      string
 	OIDCAudience    string
 	OIDCAdminGroups []string
+
+	// Phase D-5: PKCE flow.
+	OIDCClientID     string
+	OIDCClientSecret string // optional; many SPAs use public clients with no secret
+	OIDCAuthorizeURL string // resolved from discovery if empty
+	OIDCTokenURL     string // resolved from discovery if empty
 }
 
 func main() {
@@ -116,16 +124,17 @@ func main() {
 	mux.Handle("/api/query/", proxyHandler(cfg.QueryEngineURL, "/api/query", validator, logger))
 	mux.Handle("/api/alert/", proxyHandler(cfg.AlertManagerURL, "/api/alert", validator, logger))
 
+	// Phase D-5: PKCE callback + token exchange. Browser hits
+	// /oidc/callback after the IdP redirect; the SPA reads the code
+	// out of the URL and POSTs it to /oidc/exchange, which trades
+	// it for an access token with the IdP. Client secret (when used)
+	// stays server-side.
+	mux.Handle("/oidc/callback", spaHandler(sub)) // SPA handles the URL params
+	mux.HandleFunc("/oidc/exchange", oidcExchangeHandler(&cfg, logger))
+
 	// Surface the resolved config to the UI so the SPA knows which
 	// issuer to authenticate against for the in-browser OIDC flow.
-	mux.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{` +
-			`"oidc_issuer":"` + cfg.OIDCIssuer + `",` +
-			`"oidc_audience":"` + cfg.OIDCAudience + `",` +
-			`"version":"1.0.0"` +
-			`}`))
-	})
+	mux.HandleFunc("/config", configHandler(&cfg))
 
 	srv := &http.Server{
 		Addr:         cfg.Addr,
@@ -238,6 +247,155 @@ func loadConfig() config {
 		OIDCIssuer:      os.Getenv("OBSERVE_X_OIDC_ISSUER"),
 		OIDCAudience:    getEnv("OBSERVE_X_OIDC_AUDIENCE", "observex"),
 		OIDCAdminGroups: splitCSV(os.Getenv("OBSERVE_X_OIDC_ADMIN_GROUPS")),
+
+		OIDCClientID:     getEnv("OBSERVE_X_OIDC_CLIENT_ID", "observex"),
+		OIDCClientSecret: os.Getenv("OBSERVE_X_OIDC_CLIENT_SECRET"), // optional
+		OIDCAuthorizeURL: os.Getenv("OBSERVE_X_OIDC_AUTHORIZE_URL"),
+		OIDCTokenURL:     os.Getenv("OBSERVE_X_OIDC_TOKEN_URL"),
+	}
+}
+
+// configHandler emits the public OIDC config. We discover the
+// authorize + token endpoints from the issuer's well-known doc
+// the first time the SPA asks; subsequent requests are cached.
+func configHandler(cfg *config) http.HandlerFunc {
+	var (
+		cached []byte
+		err    error
+	)
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if cached == nil {
+			cached, err = buildConfigJSON(r.Context(), cfg)
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(cached)
+	}
+}
+
+func buildConfigJSON(ctx context.Context, cfg *config) ([]byte, error) {
+	authz := cfg.OIDCAuthorizeURL
+	token := cfg.OIDCTokenURL
+	if cfg.OIDCIssuer != "" && (authz == "" || token == "") {
+		// Best-effort discovery; if it fails, the SPA falls back to
+		// the conventional /authorize path. We don't fatal here so
+		// IdPs that are temporarily down don't block the UI from
+		// loading at all.
+		a, t, derr := discoverOIDCEndpoints(ctx, cfg.OIDCIssuer)
+		if derr == nil {
+			if authz == "" {
+				authz = a
+			}
+			if token == "" {
+				token = t
+			}
+		}
+	}
+	return json.Marshal(map[string]any{
+		"version":             "1.0.0",
+		"oidc_issuer":         cfg.OIDCIssuer,
+		"oidc_audience":       cfg.OIDCAudience,
+		"oidc_client_id":      cfg.OIDCClientID,
+		"authorize_endpoint":  authz,
+		"token_endpoint":      token,
+	})
+}
+
+func discoverOIDCEndpoints(ctx context.Context, issuer string) (string, string, error) {
+	url := strings.TrimRight(issuer, "/") + "/.well-known/openid-configuration"
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", "", io.EOF
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var doc struct {
+		Authorize string `json:"authorization_endpoint"`
+		Token     string `json:"token_endpoint"`
+	}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return "", "", err
+	}
+	return doc.Authorize, doc.Token, nil
+}
+
+// oidcExchangeHandler swaps the OAuth2 code + PKCE verifier for an
+// access token at the IdP's token endpoint. The browser doesn't
+// touch the (optional) client_secret; that lives on the server.
+//
+// Phase D-5 / ADR-0022.
+func oidcExchangeHandler(cfg *config, logger *zap.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		if cfg.OIDCIssuer == "" {
+			http.Error(w, "OIDC not configured", http.StatusServiceUnavailable)
+			return
+		}
+		var body struct {
+			Code         string `json:"code"`
+			CodeVerifier string `json:"code_verifier"`
+			RedirectURI  string `json:"redirect_uri"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		if body.Code == "" || body.CodeVerifier == "" || body.RedirectURI == "" {
+			http.Error(w, "missing code, code_verifier or redirect_uri", http.StatusBadRequest)
+			return
+		}
+		tokURL := cfg.OIDCTokenURL
+		if tokURL == "" {
+			_, t, err := discoverOIDCEndpoints(r.Context(), cfg.OIDCIssuer)
+			if err != nil {
+				logger.Warn("oidc discovery", zap.Error(err))
+				http.Error(w, "IdP discovery failed", http.StatusBadGateway)
+				return
+			}
+			tokURL = t
+		}
+
+		form := url.Values{}
+		form.Set("grant_type", "authorization_code")
+		form.Set("code", body.Code)
+		form.Set("code_verifier", body.CodeVerifier)
+		form.Set("redirect_uri", body.RedirectURI)
+		form.Set("client_id", cfg.OIDCClientID)
+		if cfg.OIDCClientSecret != "" {
+			form.Set("client_secret", cfg.OIDCClientSecret)
+		}
+
+		req, _ := http.NewRequestWithContext(r.Context(), http.MethodPost, tokURL,
+			strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+		if err != nil {
+			logger.Warn("oidc token", zap.Error(err))
+			http.Error(w, "IdP unavailable", http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode/100 != 2 {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+			logger.Warn("oidc token non-2xx",
+				zap.Int("status", resp.StatusCode), zap.ByteString("body", b))
+			http.Error(w, "IdP rejected exchange", http.StatusUnauthorized)
+			return
+		}
+		// Pass through the IdP's JSON as-is; the SPA reads
+		// `access_token` and stores it.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.Copy(w, resp.Body)
 	}
 }
 

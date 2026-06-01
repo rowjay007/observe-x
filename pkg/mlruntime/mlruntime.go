@@ -36,11 +36,29 @@ import (
 )
 
 // Sample is one (tenant, metric, value, time) tuple to score.
+//
+// Phase D-1 generalised this from a single Value to an optional
+// Features vector to support multi-feature models (Isolation
+// Forest, multivariate LSTM, etc.). Single-feature predictors
+// continue to read `Value`; multi-feature predictors read
+// `Features` and fall back to `[Value]` when Features is nil.
+// See ADR-0018.
 type Sample struct {
 	TenantID string
 	Metric   string
-	Value    float64
+	Value    float64    // legacy single-feature input; mirrored to Features[0] on the wire
+	Features []float64  // optional multi-feature input; nil ⇒ use [Value]
 	At       time.Time
+}
+
+// FeatureVector returns Features when non-nil, otherwise [Value].
+// Predictors should call this rather than reading either field
+// directly so the back-compat shim stays one place.
+func (s Sample) FeatureVector() []float64 {
+	if s.Features != nil {
+		return s.Features
+	}
+	return []float64{s.Value}
 }
 
 // Decision is the predictor's verdict. Anomaly == false means the

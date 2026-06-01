@@ -15,6 +15,7 @@
       <button data-tab="tenants" class="tab active">Tenants</button>
       <button data-tab="query" class="tab">Query</button>
       <button data-tab="alerts" class="tab">Alerts</button>
+      <button data-tab="audit" class="tab">Audit</button>
     </div>
     <div class="who">
       <span id="who-text">not authenticated</span>
@@ -53,13 +54,36 @@
     <section id="panel-alerts" class="panel">
       <header>
         <h1>Alerts</h1>
-        <button id="refresh-alerts">Refresh</button>
+        <div class="row-actions">
+          <span id="stream-status" class="pill">offline</span>
+          <button id="toggle-stream">Live stream</button>
+          <button id="refresh-alerts">Refresh</button>
+        </div>
       </header>
       <table id="alerts-table" class="grid">
         <thead><tr><th>State</th><th>Tenant</th><th>Rule</th><th>Fired</th><th>Notified</th></tr></thead>
         <tbody></tbody>
       </table>
       <p class="empty" id="alerts-empty">No active alerts.</p>
+      <h2 class="subheading">Live feed</h2>
+      <pre id="alert-stream" class="result"></pre>
+    </section>
+
+    <section id="panel-audit" class="panel">
+      <header>
+        <h1>Audit Log</h1>
+        <div class="row-actions">
+          <label>Tenant
+            <input id="audit-tenant" placeholder="(all)" />
+          </label>
+          <button id="refresh-audit">Refresh</button>
+        </div>
+      </header>
+      <table id="audit-table" class="grid">
+        <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Tenant</th><th>Details</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="empty" id="audit-empty">No audit records.</p>
     </section>
   </main>
 

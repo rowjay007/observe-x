@@ -169,6 +169,11 @@ type Options struct {
 	// ClickHouse is the storage configuration. If unset, the engine
 	// runs in WAL-only mode (no remote persistence). Useful for tests.
 	ClickHouse *chstorage.Options
+
+	// Spillover, when non-nil, lets the supervisor durably queue
+	// signals that would otherwise be dropped on mailbox-full.
+	// Pass *spillover.Spillover (Phase D-7, ADR-0024).
+	Spillover supervisor.Spiller
 }
 
 func (o Options) withDefaults() Options {
@@ -245,7 +250,9 @@ func NewProcessingEngineWithOptions(opts Options) (*ProcessingEngine, error) {
 		opts:     opts,
 		wal:      w,
 		storage:  backend,
-		sup:      supervisor.NewSupervisor(),
+		sup:      supervisor.NewSupervisorWithOptions(supervisor.Options{
+			Spillover: opts.Spillover,
+		}),
 		sampler:  sampling.NewAdaptiveSampler(opts.SamplingRate, opts.MaxTraceQueue),
 		ingestCh: make(chan signal.Signal, opts.IngestBufferSize),
 	}, nil
