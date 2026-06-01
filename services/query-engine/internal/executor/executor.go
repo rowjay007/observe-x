@@ -36,6 +36,11 @@ func New(client *chstorage.Client) *Executor {
 	return &Executor{client: client}
 }
 
+// Client returns the underlying ClickHouse client. Exposed so
+// adjacent handlers (logs SSE tail in E-2, PromQL/LogQL shims in
+// E-5) can run hand-written SQL without re-opening the connection.
+func (e *Executor) Client() *chstorage.Client { return e.client }
+
 // Execute runs a planned query and streams rows to w as NDJSON. The
 // caller is expected to set the appropriate Content-Type header
 // (application/x-ndjson) before calling Execute.

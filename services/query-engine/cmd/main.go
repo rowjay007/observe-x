@@ -133,6 +133,9 @@ func buildRouter(authMW *auth.AuthMiddleware, exec *executor.Executor, logger *z
 	// is application/x-parquet streamed inline. Operators commonly
 	// pipe into `aws s3 cp - s3://bucket/key.parquet`.
 	authorized.POST("/v1/export", auth.GinRequireScope(auth.ScopeQuery), exportHandler(exec, logger))
+	// Phase E-2: SSE live tail for logs. Polls ClickHouse with a
+	// tenant-pinned cursor at logsTailInterval.
+	authorized.GET("/v1/logs/stream", auth.GinRequireScope(auth.ScopeQuery), logsStreamHandler(exec.Client(), logger))
 
 	return r
 }
