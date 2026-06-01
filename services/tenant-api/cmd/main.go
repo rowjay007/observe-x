@@ -206,6 +206,15 @@ func (s *server) router() http.Handler {
 
 		// Phase D-4: read-only audit log (ADR-0021).
 		admin.GET("/audit", s.listAudit)
+
+		// Phase E-4: dashboards CRUD (ADR-0032). Layouts are opaque
+		// JSONB owned by the SPA; tenant-api validates {tenant_id,
+		// name} and parses+re-encodes the JSON for safety.
+		admin.GET("/dashboards", s.listDashboards)
+		admin.GET("/dashboards/:id", s.getDashboard)
+		admin.POST("/dashboards", s.createDashboard)
+		admin.PUT("/dashboards/:id", s.updateDashboard)
+		admin.DELETE("/dashboards/:id", s.deleteDashboard)
 	}
 	return r
 }
@@ -642,3 +651,156 @@ func ifZero(n, d int) int {
 // ensure json import is used (Gin's BindJSON imports it transitively but
 // some lint configurations want the explicit symbol).
 var _ = json.Marshal
+
+// ─── dashboards (Phase E-4) ───────────────────────────────────────────────
+
+// listDashboards returns every dashboard for the tenant query
+// param. We don't enforce tenant equality between actor and listed
+// rows here because the route is admin-scoped (operators are
+// expected to see across their tenants); RLS on Postgres is the
+// hard safety net.
+func (s *server) listDashboards(c *gin.Context) {
+	tenantID := c.Query("tenant_id")
+	if tenantID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id required"})
+		return
+	}
+	rows, err := s.repo.ListDashboards(c.Request.Context(), tenantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	out := make([]gin.H, 0, len(rows))
+	for _, d := range rows {
+		out = append(out, dashboardJSON(d))
+	}
+	c.JSON(http.StatusOK, gin.H{"dashboards": out})
+}
+
+func (s *server) getDashboard(c *gin.Context) {
+	d, err := s.repo.GetDashboard(c.Request.Context(), c.Param("id"))
+	if errors.Is(err, store.ErrDashboardNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, dashboardJSON(d))
+}
+
+type dashboardReq struct {
+	TenantID string          `json:"tenant_id"`
+	Name     string          `json:"name"`
+	Layout   json.RawMessage `json:"layout"`
+}
+
+func (s *server) createDashboard(c *gin.Context) {
+	var req dashboardReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad json: " + err.Error()})
+		return
+	}
+	if req.TenantID == "" || req.Name == "" || len(req.Layout) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id, name, layout required"})
+		return
+	}
+	// Layout must be a JSON object (`{...}`), not a primitive or
+	// array. The SPA owns the schema beneath; we just guard the
+	// shape so a corrupt or attacker-crafted payload can't poison
+	// the row or break downstream consumers that expect an object.
+	if !isJSONObject(req.Layout) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "layout must be a JSON object"})
+		return
+	}
+	d, err := s.repo.CreateDashboard(c.Request.Context(), store.Dashboard{
+		TenantID:  req.TenantID,
+		Name:      req.Name,
+		Layout:    []byte(req.Layout),
+		CreatedBy: c.GetHeader("X-Actor"),
+	})
+	if errors.Is(err, store.ErrDashboardExists) {
+		c.JSON(http.StatusConflict, gin.H{"error": "dashboard name already used"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, dashboardJSON(d))
+}
+
+func (s *server) updateDashboard(c *gin.Context) {
+	var req dashboardReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad json: " + err.Error()})
+		return
+	}
+	if req.Name == "" || len(req.Layout) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name, layout required"})
+		return
+	}
+	if !isJSONObject(req.Layout) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "layout must be a JSON object"})
+		return
+	}
+	d, err := s.repo.UpdateDashboard(c.Request.Context(), store.Dashboard{
+		ID:     c.Param("id"),
+		Name:   req.Name,
+		Layout: []byte(req.Layout),
+	})
+	if errors.Is(err, store.ErrDashboardNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	if errors.Is(err, store.ErrDashboardExists) {
+		c.JSON(http.StatusConflict, gin.H{"error": "dashboard name already used"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, dashboardJSON(d))
+}
+
+func (s *server) deleteDashboard(c *gin.Context) {
+	err := s.repo.DeleteDashboard(c.Request.Context(), c.Param("id"))
+	if errors.Is(err, store.ErrDashboardNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+// isJSONObject reports whether raw decodes to a JSON object
+// (`{...}`). Strings, numbers, arrays, true/false/null all return
+// false. Cheap pre-check avoids the cost of full Unmarshal-to-map
+// just to validate shape.
+func isJSONObject(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var m map[string]json.RawMessage
+	return json.Unmarshal(raw, &m) == nil
+}
+
+func dashboardJSON(d store.Dashboard) gin.H {
+	// Hand the raw layout bytes through as json.RawMessage so the
+	// JSON encoder embeds them verbatim rather than double-encoding
+	// the JSON string.
+	return gin.H{
+		"id":         d.ID,
+		"tenant_id":  d.TenantID,
+		"name":       d.Name,
+		"layout":     json.RawMessage(d.Layout),
+		"created_by": d.CreatedBy,
+		"created_at": d.CreatedAt.Format(time.RFC3339Nano),
+		"updated_at": d.UpdatedAt.Format(time.RFC3339Nano),
+	}
+}

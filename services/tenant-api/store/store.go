@@ -41,12 +41,27 @@ type AuditEvent struct {
 	SourceIP *string
 }
 
+// Dashboard is a saved panel layout owned by a tenant. The Layout
+// field is opaque JSON the SPA owns; tenant-api treats it as bytes
+// once validated as `{}`-shaped JSON upstream. See ADR-0032.
+type Dashboard struct {
+	ID        string
+	TenantID  string
+	Name      string
+	Layout    []byte // raw JSONB; the SPA owns the schema
+	CreatedBy string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 // ─── errors ───────────────────────────────────────────────────────────────
 
 var (
-	ErrTenantNotFound = errors.New("store: tenant not found")
-	ErrTenantExists   = errors.New("store: tenant already exists")
-	ErrKeyNotFound    = errors.New("store: api key not found")
+	ErrTenantNotFound    = errors.New("store: tenant not found")
+	ErrTenantExists      = errors.New("store: tenant already exists")
+	ErrKeyNotFound       = errors.New("store: api key not found")
+	ErrDashboardNotFound = errors.New("store: dashboard not found")
+	ErrDashboardExists   = errors.New("store: dashboard name already used by this tenant")
 )
 
 // ─── Store ────────────────────────────────────────────────────────────────
@@ -261,4 +276,115 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// ─── dashboards (Phase E-4) ───────────────────────────────────────────────
+
+// ListDashboards returns every dashboard for the tenant, newest
+// first. Caller must already have authenticated the tenant.
+func (s *Store) ListDashboards(ctx context.Context, tenantID string) ([]Dashboard, error) {
+	if tenantID == "" {
+		return nil, errors.New("store: tenant_id required")
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT id::text, tenant_id, name, layout, COALESCE(created_by,''),
+		       created_at, updated_at
+		FROM dashboards
+		WHERE tenant_id = $1
+		ORDER BY updated_at DESC
+		LIMIT 200`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list dashboards: %w", err)
+	}
+	defer rows.Close()
+	out := make([]Dashboard, 0)
+	for rows.Next() {
+		var d Dashboard
+		if err := rows.Scan(&d.ID, &d.TenantID, &d.Name, &d.Layout,
+			&d.CreatedBy, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("store: scan dashboard: %w", err)
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+// GetDashboard fetches one dashboard by id; tenant scoping is
+// enforced by RLS, but we re-check on the way out so a misconfigured
+// connection can never leak across tenants.
+func (s *Store) GetDashboard(ctx context.Context, id string) (Dashboard, error) {
+	var d Dashboard
+	err := s.pool.QueryRow(ctx, `
+		SELECT id::text, tenant_id, name, layout, COALESCE(created_by,''),
+		       created_at, updated_at
+		FROM dashboards
+		WHERE id = $1::uuid`, id).Scan(
+		&d.ID, &d.TenantID, &d.Name, &d.Layout, &d.CreatedBy,
+		&d.CreatedAt, &d.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Dashboard{}, ErrDashboardNotFound
+	}
+	if err != nil {
+		return Dashboard{}, fmt.Errorf("store: get dashboard: %w", err)
+	}
+	return d, nil
+}
+
+// CreateDashboard inserts a new dashboard. Returns ErrDashboardExists
+// on (tenant_id, name) uniqueness violation so callers can prompt
+// the operator to rename instead of silently shadowing.
+func (s *Store) CreateDashboard(ctx context.Context, d Dashboard) (Dashboard, error) {
+	if d.TenantID == "" || d.Name == "" || len(d.Layout) == 0 {
+		return Dashboard{}, errors.New("store: tenant_id, name, layout required")
+	}
+	row := s.pool.QueryRow(ctx, `
+		INSERT INTO dashboards (tenant_id, name, layout, created_by)
+		VALUES ($1, $2, $3, NULLIF($4,''))
+		RETURNING id::text, created_at, updated_at`,
+		d.TenantID, d.Name, d.Layout, d.CreatedBy)
+	if err := row.Scan(&d.ID, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		if isUniqueViolation(err) {
+			return Dashboard{}, ErrDashboardExists
+		}
+		return Dashboard{}, fmt.Errorf("store: insert dashboard: %w", err)
+	}
+	return d, nil
+}
+
+// UpdateDashboard replaces the name + layout of an existing
+// dashboard. updated_at is touched by a row trigger.
+func (s *Store) UpdateDashboard(ctx context.Context, d Dashboard) (Dashboard, error) {
+	if d.ID == "" || d.Name == "" || len(d.Layout) == 0 {
+		return Dashboard{}, errors.New("store: id, name, layout required")
+	}
+	row := s.pool.QueryRow(ctx, `
+		UPDATE dashboards
+		SET name = $2, layout = $3
+		WHERE id = $1::uuid
+		RETURNING tenant_id, created_at, updated_at`,
+		d.ID, d.Name, d.Layout)
+	if err := row.Scan(&d.TenantID, &d.CreatedAt, &d.UpdatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Dashboard{}, ErrDashboardNotFound
+		}
+		if isUniqueViolation(err) {
+			return Dashboard{}, ErrDashboardExists
+		}
+		return Dashboard{}, fmt.Errorf("store: update dashboard: %w", err)
+	}
+	return d, nil
+}
+
+// DeleteDashboard hard-deletes a dashboard. RLS gates which tenant's
+// dashboards a connection can see; even without RLS the id is a UUID
+// so blind-guess deletes across tenants are infeasible.
+func (s *Store) DeleteDashboard(ctx context.Context, id string) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM dashboards WHERE id = $1::uuid`, id)
+	if err != nil {
+		return fmt.Errorf("store: delete dashboard: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrDashboardNotFound
+	}
+	return nil
 }
