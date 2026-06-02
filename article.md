@@ -2,9 +2,9 @@
 
 Observability platforms often fail not in their ingestion, but at their interface. The metrics arrive intact, the queries run, the alerts fire on time. But the human looking at the dashboard at three in the morning sees a rendering surface that belongs to a different brand, with a different keyboard idiom, and a different model of who owns the data. Every alert deep-links to someone else's URL. Every shared chart lives on a third party's domain. The platform's brand experience, the part operators interact with for ninety percent of their working hours, dead-ends at the moment anyone wants to see a chart of anything.
 
-This is the failure ObserveX Phase E was engineered to address. Phase E-0 had already shipped the obvious answer: provisioned Grafana with a ClickHouse datasource plugin, three tenant-facing dashboards, four-pane parity with the commercial competition. By any reasonable definition of "production-ready visualization," the work was done. The integration tests were green. The Helm chart was lint-clean. The dashboards rendered. And yet the question that mattered, the one the engineering director asked at the end of a long week, was: *do we have to build a frontend app now?*
+This is the failure pattern a multi-tenant observability platform was recently engineered to address. The obvious answer had already shipped: provisioned Grafana with a ClickHouse datasource plugin, several tenant-facing dashboards, four-pane parity with the commercial competition. By any reasonable definition of "production-ready visualization," the work was done. The integration tests were green. The Helm chart was lint-clean. The dashboards rendered. And yet the question that mattered, the one the engineering director asked at the end of a long week, was: *do we have to build a frontend app now?*
 
-The honest answer turned out to be yes — but not the frontend app the question implied. What followed was two weeks of deliberate refusal to import the obvious library at five separate decision points. The result is a tag, `v1.1.0`, that adds a native Metrics workbench, a Logs explorer with live tail, a trace waterfall and service map, a Dashboards CRUD surface with share-by-URL, and a PromQL/LogQL translator that lets existing Grafana panels keep working without ClickHouse-SQL leakage. Total new code: 2,843 lines of Go, 536 lines of vanilla JavaScript, zero new top-level module dependencies, zero new runtime services. This document is the architectural retrospective on how those numbers were reached, what was rejected at each fork, and which principles survived contact with production.
+The honest answer turned out to be yes — but not the frontend app the question implied. What followed was two weeks of deliberate refusal to import the obvious library at five separate decision points. The result was a native Metrics workbench, a Logs explorer with live tail, a trace waterfall and service map, a Dashboards CRUD surface with share-by-URL, and a PromQL/LogQL translator that let existing Grafana panels keep working without leaking ClickHouse SQL to the user. Total new code: 2,843 lines of Go, 536 lines of vanilla JavaScript, zero new top-level module dependencies, zero new runtime services. This document is an expository walk through how those numbers were reached, what was rejected at each fork, and which principles survived contact with production.
 
 ## The Visualization Gap: When the Platform Ends at the Chart
 
@@ -22,17 +22,17 @@ What this analysis misses is the cost of *brand fragmentation*. When a transacti
 
 The framing question that emerged was not "should the platform have a frontend." Grafana was already serving that function. The question was: "what is the platform's relationship with the rendering surface it depends on?" The honest answer was that the platform owned everything except the part operators actually used.
 
-To resolve this asymmetry, two paths were available. The first was deeper Grafana integration: customize the theme, brand the dashboards, embed Grafana as an iframe inside the platform console, ship a Grafana plugin that surfaces ObserveX-specific features. This path preserves Grafana's capability while reducing brand fragmentation. It has been adopted by several commercial observability platforms — New Relic, Honeycomb, and Lightstep have all shipped variations on this pattern.
+To resolve this asymmetry, two paths were available. The first was deeper Grafana integration: customize the theme, brand the dashboards, embed Grafana as an iframe inside the operator console, ship a Grafana plugin that surfaces platform-specific features. This path preserves Grafana's capability while reducing brand fragmentation. It has been adopted by several commercial observability platforms — New Relic, Honeycomb, and Lightstep have all shipped variations on this pattern.
 
-The second path was native development: build the Metrics, Logs, Traces, and Dashboards surfaces inside the existing `services/ui-server` Go binary, using the same `embed.FS`-bundled vanilla-JS SPA pattern the platform's control-plane UI already used. This path requires writing rendering primitives the platform does not currently own. It also requires accepting that Grafana cannot be displaced from the workflow of power users who have years of PromQL and LogQL muscle memory.
+The second path was native development: build the Metrics, Logs, Traces, and Dashboards surfaces inside the existing `ui-server` Go binary, using the same `embed.FS`-bundled vanilla-JS SPA pattern the control-plane UI already used. This path requires writing rendering primitives the platform does not currently own. It also requires accepting that Grafana cannot be displaced from the workflow of power users who have years of PromQL and LogQL muscle memory.
 
-The decision was to pursue both, in sequence. Phase E-0 had already delivered the Grafana path. Phases E-1 through E-5 would deliver the native path, with a deliberate compatibility shim (PromQL and LogQL endpoints on the query engine) so the two paths could coexist indefinitely. The native path would become the default operator experience; Grafana would remain the power-user escape hatch and the migration on-ramp for teams arriving with existing dashboards.
+The decision was to pursue both, in sequence. The Grafana path shipped first to give operators an immediate visualization surface. The native path followed, with a deliberate compatibility shim (PromQL and LogQL endpoints on the query engine) so the two paths could coexist indefinitely. The native path would become the default operator experience; Grafana would remain the power-user escape hatch and the migration on-ramp for teams arriving with existing dashboards.
 
 ## The Fork in the Road: Why Each Native Layer Earned Its Implementation
 
 A native visualization layer is not a single design decision; it is approximately a dozen of them, each independently defensible or attackable. The cumulative effect of those decisions determines whether the implementation is a maintainable extension of the platform or a long-running technical debt the team will regret. The discipline required is to make each decision explicit, defend it on the evidence available, and document the rejected alternative clearly enough that a future engineer can re-evaluate it without recovering all the context.
 
-The five decisions that defined the architecture of Phase E were: the choice of charting primitive, the choice of log-streaming transport, the choice of trace renderer, the choice of dashboards persistence model, and the choice of query-language compatibility strategy. Each is examined in the sections that follow. The synthesis at the end is that *the small library beats the large library when the consumer controls the surface area*, but the analysis of why this holds at each fork is more useful than the slogan.
+The five decisions that defined the resulting architecture were: the choice of charting primitive, the choice of log-streaming transport, the choice of trace renderer, the choice of dashboards persistence model, and the choice of query-language compatibility strategy. Each is examined in the sections that follow. The synthesis at the end is that *the small library beats the large library when the consumer controls the surface area*, but the analysis of why this holds at each fork is more useful than the slogan.
 
 ## Beyond uPlot: The Case for the 300-Line Renderer
 
@@ -119,7 +119,7 @@ The deeper lesson, articulated by Dan McKinley in "Choose Boring Technology," is
 
 ## The Live-Tail Question: Polling vs Push as an Architectural Decision
 
-The second decision concerned how the Logs tab would receive new log lines in its live-tail mode. The instinct in distributed-systems engineering is that this problem is shaped like publish-subscribe: a log line arrives at the ingest gateway, a browser tab somewhere wants to see it, therefore a message bus should connect them. The platform already had NATS deployed for the actor supervisor's spillover path, as documented in ADR-0024. Adding a `logs.tail.<tenant_id>` subject was four hours of implementation. The ingest gateway would publish each log line to the subject, and the query engine would subscribe per active SSE connection, filter server-side by user-supplied severity and service, and forward to the browser. Sub-100-millisecond tail latency. The architecture diagram would gain a satisfying arrow.
+The second decision concerned how the Logs tab would receive new log lines in its live-tail mode. The instinct in distributed-systems engineering is that this problem is shaped like publish-subscribe: a log line arrives at the ingest gateway, a browser tab somewhere wants to see it, therefore a message bus should connect them. NATS was already deployed for the actor supervisor's spillover path. Adding a `logs.tail.<tenant_id>` subject was four hours of implementation. The ingest gateway would publish each log line to the subject, and the query engine would subscribe per active SSE connection, filter server-side by user-supplied severity and service, and forward to the browser. Sub-100-millisecond tail latency. The architecture diagram would gain a satisfying arrow.
 
 The design was rejected after one hour of consideration.
 
@@ -210,13 +210,13 @@ The third decision concerned the trace waterfall renderer. The canonical view in
 
 ### Why Embedding Was Rejected
 
-The cost analysis was unfavorable. Jaeger UI's `package.json` lists approximately 80 dependencies. Embedding the waterfall component alone would require either lifting the React application into the ui-server (introducing the entire React runtime, Redux store, and build pipeline the platform deliberately did not have), routing operators to a Jaeger UI deployment on a separate sub-domain (reintroducing the brand fragmentation the entire Phase E exercise was designed to eliminate), or rewriting the waterfall as a vanilla-JS component using Jaeger UI's source as a reference.
+The cost analysis was unfavorable. Jaeger UI's `package.json` lists approximately 80 dependencies. Embedding the waterfall component alone would require either lifting the React application into the ui-server (introducing the entire React runtime, Redux store, and build pipeline the operator console deliberately did not have), routing operators to a Jaeger UI deployment on a separate sub-domain (reintroducing the brand fragmentation the entire native-visualization exercise was designed to eliminate), or rewriting the waterfall as a vanilla-JS component using Jaeger UI's source as a reference.
 
-The third option won by elimination. The first two reintroduced precisely the architectural costs Phase E was designed to avoid.
+The third option won by elimination. The first two reintroduced precisely the architectural costs the work was designed to avoid.
 
 Reading the Jaeger UI source for the waterfall component revealed that the core layout algorithm is small. Spans are arranged in depth-first preorder, with each span getting one row. The row's left offset and width are computed as percentages of the total trace duration: `left = (span.start - trace.start) / trace.duration` and `width = (span.end - span.start) / trace.duration`. The status code maps to a color (typically blue for OK, red for error). Children are sorted by start time before traversal.
 
-The bells and whistles of the full Jaeger UI — collapsible sub-trees, span attributes side panels, span event timelines, span kind icons, virtualized rendering for traces exceeding several thousand spans — are layered on top of this core. The platform's operator workflow does not require them. The Grafana Tempo integration shipped in Phase E-0 remains available as the deep-dive surface for users who need richer trace exploration.
+The bells and whistles of the full Jaeger UI — collapsible sub-trees, span attributes side panels, span event timelines, span kind icons, virtualized rendering for traces exceeding several thousand spans — are layered on top of this core. The typical operator workflow does not require them. The Grafana Tempo integration shipped earlier remains available as the deep-dive surface for users who need richer trace exploration.
 
 ### The Implementation
 
@@ -308,7 +308,7 @@ The fourth decision concerned the persistence and management of saved dashboard 
 
 The argument for splitting a new domain into its own service rests on properties that genuinely matter when they apply: independent deployment cadence, independent scaling, independent failure profile, independent team ownership. The argument fails when none of those properties apply. Dashboards, in the platform's architecture, share the same authentication model as tenants (OIDC bearer tokens validated by `pkg/oidc`), the same audit-log pipeline as tenant operations, the same database connection pool (Postgres via pgxpool), the same Helm template, the same release cadence, and the same oncall rotation. Splitting them out would have created a service whose every operational property was identical to `tenant-api`, deployed separately for no reason.
 
-Sam Newman's *Building Microservices* (2nd edition, 2021) frames this trade explicitly: microservices are an organizational pattern as much as a technical one. The benefits accrue when independent teams own independent services. They do not accrue when one team operates a portfolio of services that all share infrastructure. The Phase E team is a single small team operating a single product. The benefits of splitting dashboards out would have been zero. The costs — a new deployment, a new oncall surface, a new database to back up — would have been real.
+Sam Newman's *Building Microservices* (2nd edition, 2021) frames this trade explicitly: microservices are an organizational pattern as much as a technical one. The benefits accrue when independent teams own independent services. They do not accrue when one team operates a portfolio of services that all share infrastructure. In a small-team context, the benefits of splitting dashboards out would have been zero. The costs — a new deployment, a new oncall surface, a new database to back up — would have been real.
 
 DHH's "The Majestic Monolith" essay makes the same point in a different vocabulary: the right answer for a small team is usually to keep things together until concrete pressure forces them apart. The pressure to split dashboards out did not exist. Dashboards became a new file in `tenant-api`.
 
@@ -519,7 +519,7 @@ GROUP BY t, lbl_code
 ORDER BY t
 ```
 
-With bound arguments `[]any{"http_requests_total", "api", startTime, endTime}`. The `rate()` semantic is approximated inside the bucket via `(max(value) - min(value)) / step_seconds`. This is not bit-identical to the Prometheus implementation, which computes per-sample rates with extrapolation at the bucket boundaries. The discrepancy is documented in ADR-0033 and is acceptable for the typical dashboard panel use case. Power users who require exact Prometheus semantics should remain on Prometheus.
+With bound arguments `[]any{"http_requests_total", "api", startTime, endTime}`. The `rate()` semantic is approximated inside the bucket via `(max(value) - min(value)) / step_seconds`. This is not bit-identical to the Prometheus implementation, which computes per-sample rates with extrapolation at the bucket boundaries. The discrepancy is documented for users and is acceptable for the typical dashboard panel use case. Power users who require exact Prometheus semantics should remain on Prometheus.
 
 ### Injection Safety as an Architectural Property
 
@@ -570,7 +570,7 @@ The test passes because the architecture makes it pass. There is no point in the
 
 The LogQL pipeline in `pkg/logql/` totals 470 lines of non-test Go in a single file (`logql.go`), with 156 lines of tests. Its parser is simpler than the PromQL parser because LogQL has fewer compositional operators. The supported subset includes stream selectors with `=`, `!=`, `=~`, and `!~` matchers, line filters (`|=`, `!=`, `|~`, `!~`), and three metric-over-log functions (`count_over_time`, `rate`, `bytes_over_time`).
 
-A useful design property of the LogQL translator is its mapping of common label names to first-class columns in the `logs` table. The `service` and `service_name` labels both map to the `service_name` column. The `severity` and `level` labels both map to the `severity` column. The `trace_id` and `span_id` labels map to their respective first-class columns. Any other label name becomes an `attributes['<key>']` lookup, matching the PromQL translator's pattern. This mapping makes LogQL queries written against Loki schemas work without modification against ObserveX's slightly different column layout.
+A useful design property of the LogQL translator is its mapping of common label names to first-class columns in the `logs` table. The `service` and `service_name` labels both map to the `service_name` column. The `severity` and `level` labels both map to the `severity` column. The `trace_id` and `span_id` labels map to their respective first-class columns. Any other label name becomes an `attributes['<key>']` lookup, matching the PromQL translator's pattern. This mapping makes LogQL queries written against Loki schemas work without modification against a slightly different column layout.
 
 A LogQL query of the form `{service="checkout-api"} |~ "error|fail" != "skip"` lowers to:
 
@@ -616,7 +616,7 @@ Five forks, five rejections of the obvious library, five custom implementations.
 
 ### New Code
 
-The total new code added across all five layers of Phase E:
+The total new code added across all five layers of the work:
 
 | Component | LOC (non-test) | LOC (test) |
 |---|---|---|
@@ -630,7 +630,7 @@ The total new code added across all five layers of Phase E:
 
 ### Dependency Graph Delta
 
-The `go.mod` file before and after Phase E was compared with `git diff --stat go.sum`. The delta is zero lines. No new top-level Go modules. No new transitive Go modules. No new JavaScript dependencies (the SPA imports nothing). The entire Phase E feature surface was built on the standard library and on dependencies the platform already had.
+The `go.mod` file before and after the work was compared with `git diff --stat go.sum`. The delta is zero lines. No new top-level Go modules. No new transitive Go modules. No new JavaScript dependencies (the SPA imports nothing). The entire feature surface was built on the standard library and on dependencies that already existed in the codebase.
 
 ### Binary Size Delta
 
@@ -638,7 +638,7 @@ The query-engine binary grew from 67.5 MB to 67.9 MB, a 0.6 percent increase. Th
 
 ### CI and Operational Delta
 
-The test job took 45 seconds longer in aggregate, accounted for by the two new test packages (`pkg/promql`, `pkg/logql`) and the new test file in the query-engine (`logs_sse_test.go`). The build job time was unchanged. The lint job time was unchanged. No new external services in CI. No new operational components at runtime: no new processes, no new containers, no new Helm sub-charts beyond a single ConfigMap for the dashboards migration, no new observability dashboards beyond the ones shipped in Phase E-0.
+The test job took 45 seconds longer in aggregate, accounted for by the two new test packages (`pkg/promql`, `pkg/logql`) and the new test file in the query-engine (`logs_sse_test.go`). The build job time was unchanged. The lint job time was unchanged. No new external services in CI. No new operational components at runtime: no new processes, no new containers, no new Helm sub-charts beyond a single ConfigMap for the dashboards migration, no new observability dashboards beyond the ones the Grafana integration had already shipped.
 
 ### The Counterfactual
 
@@ -676,7 +676,7 @@ The most valuable tests are not the ones that exercise the happy path; they are 
 
 The numbers above describe what the implementation cost in the moment. They do not describe what it will cost over the next five years. The maintenance story is the part of the analysis most often omitted from "build vs. buy" discussions, and it is the part most likely to dominate the total cost of ownership.
 
-The custom implementations in Phase E are designed to be read and maintained by a future engineer who has not seen the code before. Each file carries a top-of-file documentation comment explaining its purpose, the design alternatives that were considered, and the reasoning that produced the chosen approach. Each non-obvious section carries inline comments. The dependency graph contains only the Go standard library, ClickHouse driver code, and a few extremely stable libraries (Gin, pgx, zap). None of these substrates have shown meaningful breaking-change behavior in recent years.
+The custom implementations are designed to be read and maintained by a future engineer who has not seen the code before. Each file carries a top-of-file documentation comment explaining its purpose, the design alternatives that were considered, and the reasoning that produced the chosen approach. Each non-obvious section carries inline comments. The dependency graph contains only the Go standard library, ClickHouse driver code, and a few extremely stable libraries (Gin, pgx, zap). None of these substrates have shown meaningful breaking-change behavior in recent years.
 
 The imported alternatives would have produced a different maintenance profile. uPlot's API has changed several times in its lifetime; each major version requires a code review of the integration. The Prometheus repository ships breaking changes to its parser as part of its normal release cadence, sometimes silently. Jaeger UI's React stack absorbs the entirety of the JavaScript ecosystem's churn — Webpack upgrades, React major versions, Redux deprecation cycles, RxJS major versions. The team's calendar of "must respond to upstream changes" events would have been substantially fuller.
 
@@ -684,9 +684,9 @@ The Google Site Reliability Engineering workbook frames this trade as the "toil 
 
 ## The Operational Profile of the Visualization Layer
 
-Phase E added zero new runtime components. The native visualization features are served by the existing `ui-server` and `query-engine` processes, which were already in the deployment. The PromQL and LogQL endpoints are new routes on the existing query-engine HTTP server. The dashboards endpoints are new routes on the existing tenant-api HTTP server. The SSE log-tail endpoint is a new route on the existing query-engine HTTP server. The dashboards table is a new migration in the existing tenant-api database.
+The work added zero new runtime components. The native visualization features are served by the existing `ui-server` and `query-engine` processes, which were already in the deployment. The PromQL and LogQL endpoints are new routes on the existing query-engine HTTP server. The dashboards endpoints are new routes on the existing tenant-api HTTP server. The SSE log-tail endpoint is a new route on the existing query-engine HTTP server. The dashboards table is a new migration in the existing tenant-api database.
 
-This is the operational profile a small team can sustain. The platform's runtime topology was not changed by Phase E. The number of services to monitor did not change. The number of Helm sub-charts did not change. The number of oncall rotations did not change. The number of database connections did not change. The deployment artifact list grew by one ConfigMap (for the dashboards migration) and zero containers.
+This is the operational profile a small team can sustain. The runtime topology was not changed by this work. The number of services to monitor did not change. The number of Helm sub-charts did not change. The number of oncall rotations did not change. The number of database connections did not change. The deployment artifact list grew by one ConfigMap (for the dashboards migration) and zero containers.
 
 The contrast with a hypothetical microservices-oriented implementation is instructive. Splitting dashboards into a separate service would have added one Go binary, one Postgres database (or one schema in the existing database, requiring a separate connection pool), one Helm chart, one Service definition, one Deployment, one HorizontalPodAutoscaler, one ServiceMonitor, one PrometheusRule, and one set of dashboards documenting its health. Each of those is small individually. In aggregate, they constitute the operational complexity that has caused multiple commercial platforms to slow their development pace as they accumulated services.
 
@@ -694,13 +694,13 @@ The lesson, as DHH has argued repeatedly, is that "the majestic monolith" is the
 
 ## On the Long View of Boring Technology
 
-The arc of the Phase E exercise is, in retrospect, an argument for boring technology. The chart is built on Canvas 2D, which has been stable since 2008. The log tail uses Server-Sent Events, defined in 2009 and supported in every browser since 2011. The trace waterfall renders to imperative DOM elements, the same primitives any HTML page has used since the 1990s. The dashboards live in PostgreSQL with JSONB, available since PostgreSQL 9.4 in 2014. The PromQL and LogQL parsers are recursive-descent implementations of subsets of well-documented languages.
+The arc of this work is, in retrospect, an argument for boring technology. The chart is built on Canvas 2D, which has been stable since 2008. The log tail uses Server-Sent Events, defined in 2009 and supported in every browser since 2011. The trace waterfall renders to imperative DOM elements, the same primitives any HTML page has used since the 1990s. The dashboards live in PostgreSQL with JSONB, available since PostgreSQL 9.4 in 2014. The PromQL and LogQL parsers are recursive-descent implementations of subsets of well-documented languages.
 
-Every one of these substrates has demonstrated multi-decade stability. The platform's Phase E code can be read and maintained by anyone who understands HTML, CSS, JavaScript, Go, and SQL. There are no framework conventions to learn, no build pipelines to debug, no version-coordination problems to solve. The on-ramp for a new engineer joining the team is short: read the files, understand what each function does, make changes.
+Every one of these substrates has demonstrated multi-decade stability. The resulting code can be read and maintained by anyone who understands HTML, CSS, JavaScript, Go, and SQL. There are no framework conventions to learn, no build pipelines to debug, no version-coordination problems to solve. The on-ramp for a new engineer joining the team is short: read the files, understand what each function does, make changes.
 
 This is the property Dan McKinley's "Choose Boring Technology" essay names: boring technology is technology whose failure modes are exhaustively understood, whose patches arrive predictably, and whose behavior in five years is approximately what it is today. Innovation tokens — the finite budget of new ideas a project can absorb without losing maintainability — are best spent on the parts of the system that genuinely differentiate it, not on the parts that are commodity infrastructure. The visualization layer of an observability platform is commodity infrastructure. The intelligence of the platform lives in the ingest pipeline, the storage engine, and the query optimizer. Spending innovation tokens on the rendering surface is a category mistake.
 
-The native chart renderer is boring technology. The SSE log tail is boring technology. The trace waterfall built from imperative DOM is boring technology. The dashboards table with a JSONB column is boring technology. The hand-rolled PromQL parser is boring technology. The aggregate Phase E implementation spends zero innovation tokens. Every token it could have spent was spent instead on the platform's actual differentiators: the multi-feature ML runtime, the federated query executor, the cost-based optimizer, the hot-cold storage policy with per-tenant retention overrides. The visualization layer is the boring part of the system on purpose, so that the interesting parts can absorb the team's attention.
+The native chart renderer is boring technology. The SSE log tail is boring technology. The trace waterfall built from imperative DOM is boring technology. The dashboards table with a JSONB column is boring technology. The hand-rolled PromQL parser is boring technology. The aggregate implementation spends zero innovation tokens. Every token it could have spent was spent instead on the platform's actual differentiators: the multi-feature ML runtime, the federated query executor, the cost-based optimizer, the hot-cold storage policy with per-tenant retention overrides. The visualization layer is the boring part of the system on purpose, so that the interesting parts can absorb the team's attention.
 
 ## The Coda
 
@@ -765,11 +765,3 @@ Most days, when the bar is examined, it has not been cleared.
 *   **OWASP SQL Injection Prevention Cheat Sheet**: [https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html)
 *   **OWASP Input Validation Cheat Sheet**: [https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html](https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html)
 *   **Dan Luu — Files Are Hard**: [https://danluu.com/file-consistency/](https://danluu.com/file-consistency/)
-
-### Internal Architecture Records
-*   **ADR-0028: Visualization Strategy (Hybrid Grafana + Native)**: `docs/adr/0028-visualization-strategy.md`
-*   **ADR-0029: Native Metrics Workbench (Canvas Chart Primitive)**: `docs/adr/0029-native-metrics-workbench.md`
-*   **ADR-0030: Native Logs Explorer (SSE Live Tail)**: `docs/adr/0030-native-logs-explorer.md`
-*   **ADR-0031: Native Trace Waterfall + Service Map**: `docs/adr/0031-native-trace-waterfall.md`
-*   **ADR-0032: Dashboards CRUD (JSONB Persistence)**: `docs/adr/0032-dashboards-crud.md`
-*   **ADR-0033: PromQL + LogQL Compatibility Shims**: `docs/adr/0033-promql-logql-compat-shims.md`
