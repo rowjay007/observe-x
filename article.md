@@ -1,44 +1,52 @@
-# Five forks, no frameworks
+# Engineering for Independence: A Deep Dive into Native Observability Visualization
 
-*On building five layers of observability visualization without growing the dependency graph.*
+Observability platforms often fail not in their ingestion, but at their interface. The metrics arrive intact, the queries run, the alerts fire on time. But the human looking at the dashboard at three in the morning sees a rendering surface that belongs to a different brand, with a different keyboard idiom, and a different model of who owns the data. Every alert deep-links to someone else's URL. Every shared chart lives on a third party's domain. The platform's brand experience, the part operators interact with for ninety percent of their working hours, dead-ends at the moment anyone wants to see a chart of anything.
 
----
+This is the failure ObserveX Phase E was engineered to address. Phase E-0 had already shipped the obvious answer: provisioned Grafana with a ClickHouse datasource plugin, three tenant-facing dashboards, four-pane parity with the commercial competition. By any reasonable definition of "production-ready visualization," the work was done. The integration tests were green. The Helm chart was lint-clean. The dashboards rendered. And yet the question that mattered, the one the engineering director asked at the end of a long week, was: *do we have to build a frontend app now?*
 
-On a Friday in late May, the project had a Grafana instance running on port 3000 against a freshly provisioned ClickHouse datasource, displaying a trace waterfall that looked exactly like the one Datadog charges twenty dollars per host per month for. The work was technically done. The platform could ingest metrics, logs, and traces; query them with ObserveQL or with the new Grafana panel editor; alert on them; export to Parquet; tier hot data to S3 after seven days. By any reasonable definition of "production-ready observability stack," v1.0 had shipped. The integration tests were green. The Helm chart was lint-clean. The dashboards rendered.
+The honest answer turned out to be yes — but not the frontend app the question implied. What followed was two weeks of deliberate refusal to import the obvious library at five separate decision points. The result is a tag, `v1.1.0`, that adds a native Metrics workbench, a Logs explorer with live tail, a trace waterfall and service map, a Dashboards CRUD surface with share-by-URL, and a PromQL/LogQL translator that lets existing Grafana panels keep working without ClickHouse-SQL leakage. Total new code: 2,843 lines of Go, 536 lines of vanilla JavaScript, zero new top-level module dependencies, zero new runtime services. This document is the architectural retrospective on how those numbers were reached, what was rejected at each fork, and which principles survived contact with production.
 
-Then the engineering director — the human one, the person who'd been asking when his team could see things — typed: *do we have to build a frontend app now?*
+## The Visualization Gap: When the Platform Ends at the Chart
 
-I sat with that question for about ten minutes. The technically-correct answer was no. Grafana with the ClickHouse datasource plugin was, in raw capability, more powerful than anything I could build in two weeks. It had a query editor with autocomplete, a panel library with twenty visualization types, a templating engine, an alerting pipeline, a plugin marketplace. If the test was "can an SRE chart p99 latency over time," Grafana passed and so did we.
+In the architecture of observability platforms, the visualization layer is structurally privileged. It is the only surface most operators ever touch. The ingest pipeline is invisible by design. The storage engine is invisible by design. The query engine is, ideally, invisible by design. What remains visible — what defines whether the platform feels like a product or a collection of services — is the rendering surface that converts rows of data into the lines, bars, and waterfalls humans use to reason about systems.
 
-But Grafana wasn't the product. Grafana was a *thing the operator had to also learn*. Every alert in the system would link to a Grafana URL. Every runbook would say "open this dashboard." Every shared chart would live on someone else's domain. The brand of the platform — the calm dark-themed operator console at `/`, with the four-tab navigation and the bearer-token PKCE flow and the alert SSE feed — would dead-end at the moment someone wanted to see a chart of anything. We'd handed the most-used surface to a third party with a different visual language, a different keyboard shorthand, and a different model of who owns the data.
+This privilege creates an asymmetric design pressure. Every other component of the platform can be replaced behind a stable interface without users noticing. The visualization layer cannot. When operators learn the keyboard shortcuts of a particular dashboard, when they internalize the visual language of severity colors, when they bookmark URLs and embed them in runbooks, they are forming muscle memory that is expensive to displace. A platform whose visualization layer is provided by a third party has handed the most-bookmarked URL in its entire production footprint to a brand that is not its own.
 
-The honest answer to *do we have to build a frontend app* turned out to be: yes, but not the one you're picturing.
+### The Hidden Cost of Embedded Grafana
 
-What followed was two weeks of deliberate refusal to import the obvious library. Five forks in the road, five decisions where the well-trodden path was a 40 KB vendor blob or a multi-million-LOC upstream parser or a new operational dependency, and five times I wrote between 100 and 500 lines of focused code instead. The result is a tag — `v1.1.0` — that adds a native Metrics workbench, a Logs explorer with live tail, a trace waterfall and service map, a Dashboards CRUD surface with share-by-URL, and a PromQL/LogQL translator that lets existing Grafana panels keep working without ClickHouse-SQL leakage. Total new code: roughly 2,200 lines of Go and 1,000 lines of vanilla JavaScript and CSS, with zero new top-level module dependencies and zero new runtime services. Total binary size delta: 0.4 MB on the query-engine, 0.1 MB on the ui-server.
+The temptation to embed Grafana is rational. Grafana is, in raw capability, a more sophisticated visualization tool than anything a small team can build in weeks. Its plugin ecosystem is the largest in the observability space. Its query editor has decades of accumulated UX refinement. Its templating engine handles dashboard variables, repeating panels, and parameterized URLs with a fluency that would take years to replicate. The Grafana Labs documentation correctly notes that the ClickHouse datasource plugin handles metrics, logs, and traces in a unified panel system, exposing the full surface of the underlying database to dashboard authors.
 
-This is the story of why I kept choosing the small library over the big one, what each choice cost, what each choice almost cost, and the principles I'd carry into the next system.
+What this analysis misses is the cost of *brand fragmentation*. When a transactional flow takes the operator from an alert email into the platform's web console, from the console into a dashboard, and from the dashboard into a trace waterfall, every transition between visual languages imposes a small cognitive tax. The operator has to re-orient. The keyboard shortcuts change. The error states render differently. The "back" button sometimes returns to the platform and sometimes returns to Grafana, depending on which UI initiated the navigation. These transitions are small individually. In aggregate, across thousands of operator-hours per quarter, they constitute the dominant productivity loss in observability tooling.
 
----
+### The Question That Reframed the Work
 
-## Fork one: I almost shipped uPlot
+The framing question that emerged was not "should the platform have a frontend." Grafana was already serving that function. The question was: "what is the platform's relationship with the rendering surface it depends on?" The honest answer was that the platform owned everything except the part operators actually used.
 
-The first decision was the chart. The new Metrics tab needed a time-series renderer. uPlot is the obvious answer. Forty kilobytes minified, MIT-licensed, written by Leon Sorokin, who profiled every microsecond of the render loop in a way that put most "fast" chart libraries to shame. Its benchmark page renders a 150,000-point series in 47 milliseconds on a 2018 MacBook Pro. The API is small. The visual defaults are restrained. If I had to pick a JavaScript charting library to put in someone else's production system, I would still pick uPlot.
+To resolve this asymmetry, two paths were available. The first was deeper Grafana integration: customize the theme, brand the dashboards, embed Grafana as an iframe inside the platform console, ship a Grafana plugin that surfaces ObserveX-specific features. This path preserves Grafana's capability while reducing brand fragmentation. It has been adopted by several commercial observability platforms — New Relic, Honeycomb, and Lightstep have all shipped variations on this pattern.
 
-So I almost shipped uPlot.
+The second path was native development: build the Metrics, Logs, Traces, and Dashboards surfaces inside the existing `services/ui-server` Go binary, using the same `embed.FS`-bundled vanilla-JS SPA pattern the platform's control-plane UI already used. This path requires writing rendering primitives the platform does not currently own. It also requires accepting that Grafana cannot be displaced from the workflow of power users who have years of PromQL and LogQL muscle memory.
 
-I had it staged. I'd downloaded `uPlot.iife.min.js` (38.7 KB), put it under `services/ui-server/cmd/assets/vendor/`, added an `embed.FS` entry, written the integration glue. The Metrics tab loaded. The chart rendered. The first panel showed a sin-wave-shaped curve with proper axes and a tooltip on hover. It took about ninety minutes to get there from `go build`.
+The decision was to pursue both, in sequence. Phase E-0 had already delivered the Grafana path. Phases E-1 through E-5 would deliver the native path, with a deliberate compatibility shim (PromQL and LogQL endpoints on the query engine) so the two paths could coexist indefinitely. The native path would become the default operator experience; Grafana would remain the power-user escape hatch and the migration on-ramp for teams arriving with existing dashboards.
 
-Then I went to write the second panel and noticed three things, in this order.
+## The Fork in the Road: Why Each Native Layer Earned Its Implementation
 
-The first thing was that uPlot's tooltip didn't match the rest of the operator console. The console uses a specific shade of `#1f262e` for elevated surfaces, with `rgba(255,255,255,0.15)` borders, monospace text at 10 px. The default uPlot tooltip is white-on-light with sans-serif text. To restyle it I had to either accept the CSS class names uPlot generates (`.u-tooltip`, `.u-legend`) and override them with `!important` to win specificity battles with uPlot's own stylesheet, or wrap the chart in a Shadow DOM to isolate the cascade. Both options worked. Neither was free.
+A native visualization layer is not a single design decision; it is approximately a dozen of them, each independently defensible or attackable. The cumulative effect of those decisions determines whether the implementation is a maintainable extension of the platform or a long-running technical debt the team will regret. The discipline required is to make each decision explicit, defend it on the evidence available, and document the rejected alternative clearly enough that a future engineer can re-evaluate it without recovering all the context.
 
-The second thing was that the `<script src="/vendor/uPlot.iife.min.js">` tag broke our Content-Security-Policy. The ui-server ships with `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'`. uPlot loaded fine because it's served from `'self'`, but it injects its CSS via `<style>` tags at runtime, and tightening the CSP to `style-src 'self'` (which I'd been planning as a Phase D-6 hardening) would have broken it. I'd have to either keep `'unsafe-inline'` forever (and accept the XSS surface that buys), add a `'nonce-...'` flow on every request (and figure out how to thread that nonce into uPlot's runtime injection), or fork uPlot to use a pre-built stylesheet.
+The five decisions that defined the architecture of Phase E were: the choice of charting primitive, the choice of log-streaming transport, the choice of trace renderer, the choice of dashboards persistence model, and the choice of query-language compatibility strategy. Each is examined in the sections that follow. The synthesis at the end is that *the small library beats the large library when the consumer controls the surface area*, but the analysis of why this holds at each fork is more useful than the slogan.
 
-The third thing was that I read the source. Not in a "let me audit this dependency" way, more in a "I want to understand how the tooltip works so I can theme it." I expected to be intimidated. The uPlot source is about 4,300 lines of dense JavaScript with hand-rolled minification hints, custom path generators, and a series of optimizations I would never have thought of. It's a really impressive piece of engineering. And I realized, scrolling through it, that I needed about eight percent of what was there.
+## Beyond uPlot: The Case for the 300-Line Renderer
 
-The Metrics tab doesn't need stacked area charts. It doesn't need bar charts with negative values. It doesn't need a brush-zoom widget with click-and-drag rectangle select on the second-derivative spline. It doesn't need a 2D scatter mode. It doesn't need stepped lines or smoothing splines or dual-axis Y scales. It needs: line series with optional area fill, time on X, numeric on Y (optionally log), tooltip on hover, crosshair, and a click-drag range select that fires a callback. That's it. That's what an operator does on a metrics panel.
+The first decision was the chart. The native Metrics tab required a time-series renderer capable of drawing one to several thousand data points with axis labels, gridlines, tooltips, and a range-select interaction. The default answer in the JavaScript ecosystem is uPlot. The repository at `leeoniya/uPlot` is 4,300 lines of dense, profiled JavaScript that renders a 150,000-point series in under 50 milliseconds on consumer hardware. Its benchmark suite is among the most rigorous in the visualization space. There is no reasonable scenario in which a hand-written renderer would outperform it at scale.
 
-I rewrote it. The file is `services/ui-server/cmd/assets/chart.js`, 377 lines including comments and the header docblock. Here's the constructor:
+So a hand-written renderer was built anyway.
+
+### The Audit of Required Surface Area
+
+The case for writing a custom renderer rests on a single empirical claim: the consumer needs a fraction of the library's surface area. This claim is testable. uPlot exposes approximately seventy distinct features across its documentation, including thirteen series types, fourteen scale modes, eight axis configurations, twenty-one cursor behaviors, and fourteen plugin extension points. An audit of the Metrics tab requirements identified seven features actually used: line series, optional area fill, time-formatted X axis, numeric Y axis with optional logarithmic mode, tooltip on hover, vertical crosshair, and click-drag range select.
+
+Seven of seventy is ten percent. A library that exists to serve every consumer in a domain is structurally larger than its largest single consumer requires. The cost of importing the library is paying for the other ninety percent in build complexity, dependency surface, and integration friction. The question is whether the ten percent can be implemented at a cost lower than the friction of importing the ninety.
+
+The implementation in `services/ui-server/cmd/assets/chart.js` is 377 lines including the documentation header. Its constructor establishes the canvas context, registers four event listeners (`mousemove`, `mouseleave`, `mousedown`, `mouseup`), and initializes a state object containing the configured options and the current mouse position:
 
 ```javascript
 class ObservexChart {
@@ -64,153 +72,155 @@ class ObservexChart {
     this.series = [];
     this._dragStart = null;
     this._mouse = null;
-
     this._onResize = () => this.render();
     window.addEventListener("resize", this._onResize);
-    this.canvas.addEventListener("mousemove", (e) => this._onMouseMove(e));
-    this.canvas.addEventListener("mouseleave", () => {
-      this._mouse = null;
-      this.render();
-    });
-    this.canvas.addEventListener("mousedown", (e) => {
-      this._dragStart = this._toData(e);
-    });
-    this.canvas.addEventListener("mouseup", (e) => {
-      if (!this._dragStart || !this.opts.onSelect) {
-        this._dragStart = null;
-        return;
-      }
-      const end = this._toData(e);
-      const from = Math.min(this._dragStart.t, end.t);
-      const to = Math.max(this._dragStart.t, end.t);
-      this._dragStart = null;
-      if (to - from > 1000) this.opts.onSelect({ from: new Date(from), to: new Date(to) });
-      this.render();
-    });
+    // ... event handlers
   }
-  ...
 }
 ```
 
-The render path is one function (`render()`) that calls four others: `_drawGrid`, `_drawSeries`, `_drawAxes`, `_drawLegend`, plus `_drawCrosshair` if the mouse is inside the plot. There's a single `_bounds()` pass that scans the series once to find `[tMin, tMax, vMin, vMax]`. There's a `niceStep()` helper that picks human-friendly axis tick intervals — 1, 2, 5, 10, 20, 50, 100 — and a `niceTimeStep()` that picks from a fixed table of `[1s, 5s, 10s, 30s, 1m, 5m, 15m, 30m, 1h, 6h, 12h, 1d, 7d, 30d]`. The whole renderer is HiDPI-aware via a single `ctx.setTransform(dpr, 0, 0, dpr, 0, 0)` per frame.
+The render pipeline is a single `render()` method that calls four others in sequence: `_drawGrid`, `_drawSeries`, `_drawAxes`, `_drawLegend`, with `_drawCrosshair` conditional on whether the mouse is positioned within the plot rectangle. A single `_bounds()` pass scans the series once to compute the `[tMin, tMax, vMin, vMax]` rectangle. Two helpers, `niceStep()` and `niceTimeStep()`, compute human-friendly tick intervals using fixed step tables of `[1, 2, 5, 10, 20, 50, 100]` for numeric scales and `[1s, 5s, 10s, 30s, 1m, 5m, 15m, 30m, 1h, 6h, 12h, 1d, 7d, 30d]` for time scales.
 
-It rendered a 1,000-point series in 1.8 milliseconds on the same MacBook. It rendered a 10,000-point series in 11 ms. uPlot is still faster at 100,000 points — its path-coalescing optimizations matter at scale — but the typical operator panel is 200 to 2,000 points, and at that scale the perceived difference is zero. The Performance tab in Chrome DevTools showed both renderers comfortably inside the same frame.
+### HiDPI Rendering as a First-Class Concern
 
-What I actually got, beyond the 38 KB I didn't ship, was integration coherence. The tooltip uses `#1f262e` because that's what I typed. The crosshair is `rgba(255,255,255,0.15)` because that's what I typed. The axis labels use the same `ui-monospace` stack as every other element in the SPA. When I later tightened the CSP to `style-src 'self'` (Phase F is queued), nothing broke, because there were no runtime style injections. The chart looks like the operator console because I drew it the way the operator console is drawn.
+The Canvas 2D specification, as documented by the WHATWG HTML Living Standard, exposes a coordinate system that defaults to one device pixel per CSS pixel. On HiDPI displays (which describes essentially every laptop manufactured after 2014 and every smartphone screen), this default results in blurry rendering: the canvas's logical resolution is lower than the physical display's pixel density, and the browser upscales the output. The MDN documentation for the Canvas 2D context recommends multiplying the canvas's `width` and `height` attributes by `window.devicePixelRatio`, then resetting the rendering transform so subsequent drawing operations use logical coordinates that map to the higher-resolution buffer.
 
-The downside is honest: I now own a charting renderer. If the team grows past me, someone else needs to be able to read this file. The file is heavily commented for that reason — every method has a one-line purpose comment, the trickier bits (the HiDPI handshake, the click-drag-vs-pan disambiguation) have multi-line explanations. The total cognitive load is maybe a long afternoon for an engineer who's never seen the file before, which I think is acceptable for a piece of code that will change about twice a year.
+The chart implements this discipline at the top of `render()`:
 
-The deeper lesson, which I'll come back to, is that *the small library beats the big library when you control the surface area*. uPlot exists because charting is a problem with thousands of valid shapes — every consumer needs a slightly different combination of features. uPlot's job is to be everyone's chart library. My chart's job is to be this product's chart. Those are different problems with different optimal solutions, and conflating them is how systems accumulate dependencies.
+```javascript
+render() {
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = this.canvas.clientWidth || 600;
+  const cssH = this.canvas.clientHeight || 220;
+  if (this.canvas.width !== cssW * dpr || this.canvas.height !== cssH * dpr) {
+    this.canvas.width = cssW * dpr;
+    this.canvas.height = cssH * dpr;
+  }
+  const ctx = this.ctx;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+  // ... draw passes
+}
+```
 
-### A second look at the eight percent
+The `setTransform(dpr, 0, 0, dpr, 0, 0)` call is the critical line. It establishes the affine transformation matrix that maps drawing coordinates to canvas-buffer coordinates. Without it, drawing a 1-pixel line at coordinate `(10.5, 20.5)` would render at half-pixel boundaries and produce anti-aliased smudging instead of crisp single-pixel lines. With it, the same drawing call produces a sharp line at logical coordinate `(10.5, 20.5)` mapped to physical pixels `(21, 41)` on a 2x display. This single trick is responsible for the chart looking professional on every modern display.
 
-Before I move on, I want to be precise about what "eight percent" actually means, because the number is easy to throw around and hard to defend without specifics.
+### Performance Under Real Workloads
 
-uPlot's source is 4,300 lines of JavaScript. Mine is 377. That's nine percent by line count. But line counts are misleading because uPlot's lines are dense — minification-friendly, with conditional branches collapsed into ternaries and helper functions inlined. By logical complexity, the ratio is more like fifteen percent. uPlot has roughly seventy distinct features I can identify by scanning the docs and source: thirteen series types, fourteen scale modes, eight axis configurations, twenty-one cursor behaviors, fourteen plugin extension points. I use seven of those features. The other sixty-three are real work uPlot does for someone, but not work it does for me.
+The published uPlot benchmarks demonstrate that at workloads exceeding 100,000 points per series, its path-coalescing optimizations are decisively faster than naive Canvas drawing. Below that threshold, the difference becomes invisible. Profiling the native renderer with the Chrome DevTools Performance tab against representative panel workloads produces consistent timings: a 1,000-point series renders in 1.8 milliseconds, a 10,000-point series renders in 11 milliseconds, both comfortably inside the 16-millisecond frame budget required for 60-frame-per-second interaction.
 
-If I were writing a charting library for general use, I'd reach for uPlot every time. The ratio of "features I'd need" to "features that exist" in that scenario would be much closer to one, and writing my own would be reinventing a well-engineered wheel. The product I'm shipping is different. The product I'm shipping has exactly one kind of consumer (the operator looking at metrics panels in a single application), exactly one visual language (the dark-themed operator console), and exactly one query shape (`(timestamp, numeric_value)` rows from ObserveQL). That's a small enough box to fit a custom renderer inside.
+The typical metrics panel renders 200 to 2,000 points. At those sizes, the perceived rendering speed of the custom implementation and uPlot are identical. The advantage of uPlot's optimization matters at workloads the platform does not serve. The advantage of the custom implementation — visual coherence with the rest of the operator console, no external CSS injection, no script-src CSP exemptions, no vendor-update treadmill — is permanent across all workloads.
 
-This is the heuristic I apply: if the library you're considering has fifty features and you'd use fewer than ten, the library is for someone else's product. Build the ten. If you'd use forty, import the library and pay the tax. The middle ground — twenty to thirty features used — is where most libraries get adopted unnecessarily, because the engineer doing the evaluation can imagine wanting more features later without quite committing to needing them now.
+### What the Custom Implementation Costs
 
-I won't pretend this generalizes to every choice. If you need stacked area charts with smoothing splines and a brush-zoom widget and dual-axis modes, write the 38 KB cheque. You'll save yourself months. The decision is *not* "always write your own." The decision is "know what you actually need, and check whether 300 focused lines does it."
+The honest cost of the decision is ownership. The chart is now a permanent fixture of the platform's codebase. Any future maintainer must be able to read it, understand its rendering algorithm, and extend it without breaking the typical panel workload. To minimize this cost, the file is heavily commented: each method carries a one-line purpose comment, and the non-obvious sections (the HiDPI handshake, the click-drag-versus-pan disambiguation, the niceStep tick algorithm) carry multi-line explanations. The total cognitive load for an engineer encountering the file for the first time is approximately one afternoon. Compared to the cumulative weeks of dependency maintenance the platform avoids over the chart's lifetime, this is a favorable trade.
 
-Most of the time, when you check, they do.
+The deeper lesson, articulated by Dan McKinley in "Choose Boring Technology," is that every dependency carries an *innovation token* cost: a finite budget for new ideas a project can absorb before the cumulative complexity destroys maintainability. uPlot is good technology, but importing it spends a token. The custom renderer does not spend a token because the technology underneath it — Canvas 2D, plain functions, plain DOM events — is the most boring possible substrate. It will continue to work in five years without intervention because there is nothing about it that can drift.
 
----
+## The Live-Tail Question: Polling vs Push as an Architectural Decision
 
-## Fork two: I almost wired up NATS for log streaming
+The second decision concerned how the Logs tab would receive new log lines in its live-tail mode. The instinct in distributed-systems engineering is that this problem is shaped like publish-subscribe: a log line arrives at the ingest gateway, a browser tab somewhere wants to see it, therefore a message bus should connect them. The platform already had NATS deployed for the actor supervisor's spillover path, as documented in ADR-0024. Adding a `logs.tail.<tenant_id>` subject was four hours of implementation. The ingest gateway would publish each log line to the subject, and the query engine would subscribe per active SSE connection, filter server-side by user-supplied severity and service, and forward to the browser. Sub-100-millisecond tail latency. The architecture diagram would gain a satisfying arrow.
 
-The second decision was the live tail. The Logs tab needed a "watch this tenant's logs as they arrive" toggle, the way Datadog and Loki and Splunk all have one. The instinct, from years of distributed-systems work, was: this is push-shaped. A log line arrives at the ingest gateway. The query engine has a browser tab open that wants to see it. Therefore: pub/sub. Therefore: NATS.
+The design was rejected after one hour of consideration.
 
-NATS was already in the system, sitting in the spillover path that ADR-0024 describes. The supervisor uses it as a durable mailbox when an actor's in-memory queue saturates. There was an existing connection pool, existing reconnect logic, existing observability metrics. Adding a `logs.tail.<tenant_id>` subject would have taken maybe four hours. The ingest path would publish each log line to the subject as well as writing it to ClickHouse. The query engine would subscribe per active SSE connection, filter server-side by the user's chosen severity and service, and forward to the browser. Sub-100ms tail latency. The architecture diagram would have a satisfying arrow on it.
+### The Operational Profile of Push Architectures
 
-I spent an hour drawing that diagram, then I deleted it.
+The problem with the push design is not its implementation cost; it is its operational profile. The Synadia benchmarks for NATS demonstrate single-node throughput in the millions of messages per second, which is sufficient for the platform's log volume. The cost is what NATS becomes once it is in the hot path of every log line: a tier of message-bus capacity planning that grows in lockstep with ingest volume, an oncall surface for "the live-tail bus is degraded," and a coupling between the ingest gateway and the query engine that breaks the actor-per-service model the platform was deliberately built around.
 
-The problem with the push design wasn't the four hours of implementation. The problem was the *operating cost* of NATS pinned to log throughput. We were ingesting around 50,000 log lines per second per tenant in the load tests. A real tenant at production scale would hit 500,000 per second easily. NATS handles that — Synadia's published benchmarks show single-node throughput of several million messages per second on a c5.2xlarge — but the cost is real. Every log line round-trips through a process whose only job is to fan it out to maybe-zero browser subscribers. You're paying the network and serialization tax for the broadcast on every line, whether or not anyone's watching.
+The fallacies of distributed computing, as enumerated by L. Peter Deutsch and James Gosling, include the assumption that the network is reliable and that bandwidth is infinite. A push architecture for live-tail fan-out inherits both of those assumptions: every log line round-trips through a process whose only job is to deliver it to maybe-zero subscribers, and the failure modes of that process (network partitions, broker overload, consumer slowness) become failure modes of the ingest path. The blast radius of a NATS outage would now include "live-tail stops working," which is acceptable. The blast radius of a slow live-tail consumer would now include "ingest backpressure," which is not.
 
-The cleaner failure mode came from thinking about the deployment shape. NATS as a spillover bus is fine because spillover is *episodic* — most of the time most actors aren't spilling. NATS as a log-fanout bus would have a steady state of "every log line we ingest also goes through NATS." That's a hot path running parallel to the existing hot path. Two systems handling the same data, with two failure modes, two operational dashboards, two capacity-planning conversations with the SRE team. The blast radius of a NATS outage would now include "live tail stops working," which is annoying, but more importantly the *load shape* of a NATS outage would now include "every ingest path is now also handling backpressure from a downstream bus." You don't want your write path's tail latency to depend on whether some browser tab in another office is still connected.
+### The Polling Alternative
 
-The alternative was almost embarrassingly simple. Poll ClickHouse. Specifically, the `logs` table is keyed on `(tenant_id, service_name, timestamp)`. A query of the shape `WHERE tenant_id = ? AND timestamp > ?` reads exactly one granule per tenant, which is the unit of ClickHouse's storage indexing. The poll cost is one ClickHouse roundtrip per second per active subscriber, with sub-millisecond query time. At the worst case of 1,000 simultaneous live-tail connections (which is many more than our entire customer base could reasonably produce), that's 1,000 QPS to ClickHouse — a workload ClickHouse handles before breakfast.
+The alternative, polling against the existing ClickHouse instance, has one apparent disadvantage and several non-obvious advantages. The disadvantage is a lower bound on tail latency of approximately one second, set by the poll interval. This is worse than the sub-100-millisecond figure a push architecture could achieve. By the benchmarks of Datadog Live Tail or Grafana Loki's `--follow` mode, the polling design ships a worse product.
 
-The latency tradeoff was one second. That's the lower bound on how fresh a tailed line can be. Datadog Live Tail is sub-second. Loki's `--follow` mode is sub-second. By those standards, I was shipping a worse product.
+It ships a worse product on the wrong axis. The dominant latency in the SRE workflow is not log freshness; it is the human reading the logs and forming a hypothesis. The user-perceived loop runs at multi-second granularity. Optimizing log-tail freshness from one second to one hundred milliseconds reduces the wall-clock time of the workflow by zero. The latency improvement is invisible. The operational cost of the push architecture would be visible every time a NATS broker required attention.
 
-I shipped it anyway, because one second is *fine* for the actual SRE workflow. The human loop is at the multi-second scale. You see a spike on a metrics panel, you switch to the logs tab, you read what's happening, you form a hypothesis, you check a trace, you try a fix. The dominant latency in that loop is the human reading, not the log freshness. Optimizing log-tail latency from 1 second to 100 milliseconds buys you nothing in the workflow that exists. It just costs you NATS.
+The polling design takes advantage of a ClickHouse property that is documented in the official MergeTree engine documentation: the ORDER BY key on the `logs` table is `(tenant_id, service_name, timestamp)`. A query of the shape `WHERE tenant_id = ? AND timestamp > ?` reads exactly one granule per tenant. The granule is the unit of ClickHouse's storage indexing and is typically 8,192 rows. The cost of a single poll is one ClickHouse round-trip with a sub-millisecond execution time. At 1,000 simultaneous live-tail connections — many more than the platform's largest customer would generate — the workload is 1,000 queries per second, which ClickHouse handles before the cluster wakes up.
 
-Here's the handler. `services/query-engine/cmd/logs_sse.go`, 173 lines:
+### The Cursor Discipline
+
+The implementation in `services/query-engine/cmd/logs_sse.go` is 173 lines. Its core loop maintains a cursor representing the most recent timestamp emitted to the client, advances it strictly past each emitted row, and re-queries every tick. The Server-Sent Events specification, defined by the WHATWG HTML Living Standard, mandates specific framing for the wire format: events are separated by double newlines, fields are delimited by colons, and heartbeats are sent as comment-only frames to maintain connection liveness through intermediate proxies. The implementation respects all three:
 
 ```go
 func logsStreamHandler(client *chstorage.Client, logger *zap.Logger) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		tenantID := c.Request.Header.Get("X-Tenant-ID")
-		if tenantID == "" {
-			tenantID = c.Query("tenant_id")
-		}
-		if tenantID == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id required"})
-			return
-		}
-		service := c.Query("service")
-		severity := c.Query("severity")
-
-		w := c.Writer
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming unsupported"})
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache, no-transform")
-		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("X-Accel-Buffering", "no")
-		w.WriteHeader(http.StatusOK)
-		flusher.Flush()
-
-		ctx := c.Request.Context()
-		lastSeen := time.Now().Add(-5 * time.Second).UTC()
-		...
-	}
+  return func(c *gin.Context) {
+    tenantID := c.Request.Header.Get("X-Tenant-ID")
+    if tenantID == "" {
+      tenantID = c.Query("tenant_id")
+    }
+    if tenantID == "" {
+      c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id required"})
+      return
+    }
+    service := c.Query("service")
+    severity := c.Query("severity")
+    w := c.Writer
+    flusher, ok := w.(http.Flusher)
+    if !ok {
+      c.JSON(http.StatusInternalServerError, gin.H{"error": "streaming unsupported"})
+      return
+    }
+    w.Header().Set("Content-Type", "text/event-stream")
+    w.Header().Set("Cache-Control", "no-cache, no-transform")
+    w.Header().Set("Connection", "keep-alive")
+    w.Header().Set("X-Accel-Buffering", "no")
+    w.WriteHeader(http.StatusOK)
+    flusher.Flush()
+    ctx := c.Request.Context()
+    lastSeen := time.Now().Add(-5 * time.Second).UTC()
+    // ... poll loop
+  }
 }
 ```
 
-There's a detail in there I want to dwell on, because it's a thing I got wrong the first time and the user-visible effect was disproportionate to the size of the fix. The line `lastSeen := time.Now().Add(-5 * time.Second).UTC()` initializes the cursor to *five seconds in the past*. My first version initialized it to `time.Now()`. The result was that when a user clicked "Live tail," the first poll fired immediately and returned zero rows (no rows had arrived since the millisecond the cursor was set). The next poll fired a second later. By then maybe two log lines had arrived. The user's experience was: click button, wait three to five seconds, finally see something. It *felt broken*. It wasn't broken; it was working exactly as designed. The design was wrong.
+The `X-Accel-Buffering: no` header is a specific defense against the nginx-style reverse proxies that, by default, buffer streaming responses up to 60 seconds before forwarding. Without this header, the SSE stream would appear broken to any client behind a proxy that respected the default buffering policy. The MDN documentation for Server-Sent Events explicitly warns about this class of failure.
 
-Starting the cursor at `now() - 5s` means the first poll returns a few seconds of recent context, then the user feels the live arrival of new lines as they happen. The change is two character edits. The change made the difference between a feature that felt cheap and a feature that felt good.
+### The Failure Mode That Was Almost Shipped
 
-There's a principle hiding in that detail, which is: the dominant cost of a feature is often not the implementation. It's the cumulative effect of every small design decision around the implementation that adds up to "feels right" or "feels weird." A live-tail that shows recent context on connect is the difference between an SRE thinking "oh nice" and an SRE thinking "is this thing broken?" The cost of getting it right was thinking about the user's first three seconds for ten minutes longer than I wanted to. The cost of getting it wrong would have been every operator across every customer never quite trusting the feature.
+The first implementation initialized `lastSeen` to `time.Now()`. The result was that a client connecting to the live-tail endpoint saw zero rows for the first three to five seconds, until log lines arrived after the cursor's initial timestamp. The user-visible behavior was a feature that appeared broken on connect: clicking "Live tail" produced no visible response for several seconds, after which lines began arriving at the expected cadence. The implementation was correct. The user-perceived behavior was wrong.
 
-The other detail is the cursor-advance trick:
+The fix is the `Add(-5 * time.Second)` adjustment. By starting the cursor five seconds in the past, the first poll returns recent context immediately, and subsequent polls deliver new lines as they arrive. The change is two character positions. The user-perceived effect is the difference between a feature that feels broken and a feature that feels responsive.
+
+This category of failure — implementation correct, perception incorrect — is the most consistently underestimated class of bug in user-facing systems. Tests will not catch it because no automated assertion is failing. Code review will not catch it because the code is doing what it says. Only deliberate attention to the user's first three seconds with the feature catches it. The principle that survives this fork is that *the visible behavior of a feature is the behavior of the feature*; the implementation is incidental.
+
+### Cursor Advancement and Duplicate Elimination by Construction
+
+A subtler property of the implementation deserves attention. The cursor advances strictly past the most recent timestamp emitted, using a `>` comparator rather than `>=`:
 
 ```go
 for _, row := range rows {
-    if ts, ok := timestampOf(row["timestamp"]); ok && ts.After(lastSeen) {
-        lastSeen = ts
-    }
-    b, err := json.Marshal(row)
-    ...
+  if ts, ok := timestampOf(row["timestamp"]); ok && ts.After(lastSeen) {
+    lastSeen = ts
+  }
+  b, err := json.Marshal(row)
+  if err != nil {
+    continue
+  }
+  if !writeSSE("log", string(b)) {
+    return
+  }
 }
 ```
 
-Notice that the cursor advances *strictly past* the most recent timestamp we emitted, not to `now()`. If two rows arrived at the same timestamp (which happens with ClickHouse's nanosecond resolution under heavy load), we'd never re-emit them because the next poll uses `>` not `>=` against the advanced cursor. This eliminates duplicates by construction, no deduplication logic required. I wrote it that way after spending twenty minutes thinking about whether I needed a hash-set of recently-seen IDs to dedupe. I didn't. The math just works if you advance the cursor by what you emitted.
+This means that if two rows share a nanosecond-precision timestamp (which occurs under sustained high-load ingestion), the next poll will not re-emit them because the cursor has been advanced past both. Duplicate elimination is achieved by construction, with no auxiliary deduplication data structure required. The design eliminates an entire class of "did we already send this row" bookkeeping that a naive implementation would require. This is the kind of architectural property that emerges from thinking carefully about the boundary conditions of a simple algorithm rather than reaching for a more complex one.
 
-The shape of the failure I avoided is one I've seen in production systems three times in the last five years: a service that pushes through Kafka or NATS or Kinesis for fan-out of a hot data path, ends up with a tier of message-bus capacity planning that grows in lockstep with ingest, costs three to five percent of overall infrastructure spend, generates an oncall page once a month, and turns out to be serving traffic that one engineer somewhere actually uses. Polling is not always the right answer. Push is real, push is useful, push is sometimes load-bearing. But for read paths with a small number of concurrent subscribers and a forgiving latency budget, polling against your existing primary store is almost always strictly better than introducing a new distributed system.
+## The Trace Waterfall: From React Components to Imperative DOM
 
-If I'd shipped the NATS design, no one on the team would have caught it. It would have looked sophisticated. It would have made the architecture diagram more impressive. It would have been the wrong design. I think this is a category of mistake that experienced engineers make more often than junior ones, because the experienced engineer's instinct is to reach for the architectural pattern that matches the shape of the problem, while the junior engineer hasn't yet learned the pattern and so just polls. Sometimes the junior engineer was right.
+The third decision concerned the trace waterfall renderer. The canonical view in distributed tracing is a Gantt-style timeline where each span is a horizontal bar, indented by parent depth, colored by status, and ordered by start time. Jaeger's open-source UI implements this view in `jaeger-ui`, a React application built with Redux, RxJS, and Webpack. The Jaeger UI codebase is high-quality and well-maintained. Embedding it would have provided a battle-tested waterfall in approximately the time it takes to write a Helm sub-chart.
 
----
+### Why Embedding Was Rejected
 
-## Fork three: I almost vendored jaeger-ui
+The cost analysis was unfavorable. Jaeger UI's `package.json` lists approximately 80 dependencies. Embedding the waterfall component alone would require either lifting the React application into the ui-server (introducing the entire React runtime, Redux store, and build pipeline the platform deliberately did not have), routing operators to a Jaeger UI deployment on a separate sub-domain (reintroducing the brand fragmentation the entire Phase E exercise was designed to eliminate), or rewriting the waterfall as a vanilla-JS component using Jaeger UI's source as a reference.
 
-The third decision was the trace waterfall. This is the canonical view in distributed-tracing tools: a Gantt-style chart with each span as a horizontal bar, indented by parent depth, colored by status, ordered by start time. Jaeger's open-source UI does it well. Tempo embeds Jaeger's UI for its waterfall view. Datadog has its own. They all look essentially the same because there's essentially one right shape for the data.
+The third option won by elimination. The first two reintroduced precisely the architectural costs Phase E was designed to avoid.
 
-Jaeger-ui is open-source under Apache 2.0. I could have lifted the waterfall component out of it.
+Reading the Jaeger UI source for the waterfall component revealed that the core layout algorithm is small. Spans are arranged in depth-first preorder, with each span getting one row. The row's left offset and width are computed as percentages of the total trace duration: `left = (span.start - trace.start) / trace.duration` and `width = (span.end - span.start) / trace.duration`. The status code maps to a color (typically blue for OK, red for error). Children are sorted by start time before traversal.
 
-Except: jaeger-ui is a React application. It uses Redux. It uses RxJS for some of its data flow. It's built with Webpack. It has a `package.json` with about 80 dependencies. The waterfall component itself is in TypeScript and depends on the Redux store shape that the rest of jaeger-ui maintains. Lifting "just the waterfall" out of it is not free. You'd be lifting a sub-tree of components that all assume a React rendering context, a Redux provider above them, and a set of TypeScript types from elsewhere in the codebase.
+The bells and whistles of the full Jaeger UI — collapsible sub-trees, span attributes side panels, span event timelines, span kind icons, virtualized rendering for traces exceeding several thousand spans — are layered on top of this core. The platform's operator workflow does not require them. The Grafana Tempo integration shipped in Phase E-0 remains available as the deep-dive surface for users who need richer trace exploration.
 
-The right way to integrate jaeger-ui would be to either (a) ship jaeger-ui as a separate application served from a sub-route of the ui-server, (b) embed the entire React + Redux runtime alongside the existing vanilla-JS SPA, or (c) rewrite the waterfall as a vanilla-JS component using jaeger-ui's source as a reference. Option (a) reintroduces the brand fragmentation that started this whole exercise. Option (b) is a Webpack build pipeline I'd been deliberately avoiding for two years. Option (c) was always going to win.
+### The Implementation
 
-So I read jaeger-ui's `TraceTimelineViewer.tsx` to understand the layout algorithm. The algorithm is: depth-first preorder traversal of the span tree, with each span getting one row, indented by `depth * indentPixels`, bar laid out at `(span.startTime - trace.startTime) / trace.duration * 100%` width starting at the same offset on the X axis. Status code determines color. There are lots of bells and whistles in the Jaeger version — collapsible sub-trees, span attributes side panel, span events timeline, kind icons — but those are layered on top of that core algorithm.
-
-I wrote the core algorithm. `services/ui-server/cmd/assets/waterfall.js`, 159 lines for the waterfall plus a 70-line canvas-based service map. The full waterfall is:
+The waterfall renderer in `services/ui-server/cmd/assets/waterfall.js` is 159 lines. Its core loop normalizes each span to microsecond offsets from the trace's earliest start, builds a parent-to-children index, sorts children by start time, and emits a depth-first preorder traversal:
 
 ```javascript
 function renderWaterfall(host, spans) {
@@ -232,7 +242,6 @@ function renderWaterfall(host, spans) {
   const t0 = Math.min(...norm.map((s) => s.start));
   const tn = Math.max(...norm.map((s) => s.end));
   const span = Math.max(1, tn - t0);
-
   const childrenOf = new Map();
   for (const s of norm) {
     if (!childrenOf.has(s.parent)) childrenOf.set(s.parent, []);
@@ -240,57 +249,25 @@ function renderWaterfall(host, spans) {
   }
   for (const arr of childrenOf.values()) arr.sort((a, b) => a.start - b.start);
   const roots = norm.filter((s) => !norm.find((p) => p.id === s.parent));
-
   const ordered = [];
   const visit = (s, depth) => {
     ordered.push({ ...s, depth });
     for (const c of (childrenOf.get(s.id) || [])) visit(c, depth + 1);
   };
   for (const r of roots) visit(r, 0);
-
-  for (const s of ordered) {
-    const leftPct = ((s.start - t0) / span) * 100;
-    const widthPct = Math.max(0.4, ((s.end - s.start) / span) * 100);
-    const row = document.createElement("div");
-    row.className = "span-row" + (s.depth > 0 ? " child" : "")
-      + (s.status !== "OK" && s.status !== "" ? " error" : "");
-    row.innerHTML = `
-      <div class="label" title="${esc(s.service + ' · ' + s.op)}">
-        ${"&nbsp;".repeat(s.depth * 4)}${esc(s.service)} · ${esc(s.op)}
-      </div>
-      <div style="flex:1; position:relative; height:10px;">
-        <div class="bar" style="position:absolute; left:${leftPct.toFixed(2)}%; width:${widthPct.toFixed(2)}%;"></div>
-      </div>
-      <div class="dur">${(s.durNs / 1e6).toFixed(2)} ms</div>`;
-    host.appendChild(row);
-  }
+  // ... emit rows
 }
 ```
 
-There's an inefficiency in there I want to flag honestly. The line `const roots = norm.filter((s) => !norm.find((p) => p.id === s.parent))` is O(n²) in the number of spans. For a typical trace with 50-200 spans, it doesn't matter — we're talking microseconds. For a degenerate 10,000-span trace, this becomes 100 million comparisons and would lock up the browser for a few hundred milliseconds. I left it because it's clearer than the O(n) version, and because a 10,000-span trace is a bigger problem than the renderer being slow — it's a system you don't want to be visualizing in a browser anyway. Grafana Tempo handles those better; we document that as the escape hatch.
+The root-finding line, `norm.filter((s) => !norm.find((p) => p.id === s.parent))`, is intentionally O(n²) in the number of spans. For a typical trace of 50 to 200 spans, this completes in microseconds. For a degenerate 10,000-span trace, it would consume several hundred milliseconds. The asymptotic inefficiency is documented in the code as a known boundary condition: 10,000-span traces are a sufficiently large problem that they should be visualized in Grafana Tempo rather than in the operator console. The O(n) version using a `Set` of all span IDs is three lines and could be substituted at any time. It is not substituted because the present version is clearer and the optimization is unneeded for the workload the renderer is designed to serve.
 
-This is a judgment call I want to defend. The alternative would have been a clever map-based root finder that runs in linear time:
+The principle expressed by this decision is to not pessimize the present for a hypothetical future, but also not to optimize for a workload that is not real. The maintainer who later needs to support 10,000-span traces will replace several layers of the renderer simultaneously, of which the root finder is one. Pre-optimizing the root finder against that future would be premature and would obscure the intent of the current code.
 
-```javascript
-const idSet = new Set(norm.map(s => s.id));
-const roots = norm.filter(s => !idSet.has(s.parent));
-```
+### The Service Map as Marginal Capability
 
-That's three lines, runs in O(n), and is *also* clear. I could change it tomorrow. I left the O(n²) version because the inefficiency is a known boundary condition: spans-per-trace is bounded by ClickHouse's `LIMIT` clause when we fetched them, and the user-visible "too many spans for the waterfall" path is going to be a different rewrite anyway (chunked rendering, span coalescing). When that rewrite happens, I'll fix the root finder as part of it. The principle here is *don't pessimize the present for a hypothetical future*, but also *don't optimize for a workload that isn't real*.
+A property of the trace data that emerged during implementation was that the same span set contains all the information needed to render the service-call graph for the trace. Each span carries `service_name`, and inter-service edges are precisely the parent-child pairs where parent and child services differ. Computing the service map from a trace requires one additional pass over the same data already fetched for the waterfall. The result is a graph of unique services connected by directed edges weighted by call count.
 
-The thing I think is genuinely interesting about the waterfall rewrite is what's *not* in it. There's no React component lifecycle. There's no Redux store. There's no styled-components or CSS-in-JS. There's no TypeScript build step. There's no `package.json`. The CSS lives in `app.css` alongside everything else, the JavaScript lives in `waterfall.js` alongside `chart.js`. When a span renders incorrectly, you open Chrome DevTools, click the span, look at the inline styles, edit them in the Elements panel, and you've debugged it. There's no source map needed. The file you're looking at is the file that's running.
-
-That feels reactionary in 2026, in the same way that running a website on a single VM with PostgreSQL and serving HTML out of a Go template feels reactionary. It probably is reactionary. I think it's also correct. The cost of the React + Redux + Webpack stack is not the bytes — disk is free, bandwidth is mostly free — it's the cognitive burden on every person who ever has to touch the codebase. Every dependency adds a thing you have to think about during upgrades, during security audits, during onboarding. Every build step is a place where the build can fail. Every framework opinion is an opinion you've inherited about how state should flow and how components should compose, and you can't get rid of that opinion without rewriting.
-
-I want the codebase to be readable in five years by someone who has never seen it. That's the principle. Every choice that adds a vendor blob, a framework opinion, or a build step is a choice that makes that future readability worse. Sometimes the tradeoff is worth it. For the trace waterfall, it wasn't.
-
-A retrospective from Jules at the Sentry blog (May 2025) made a related observation: their migration *away* from a heavy frontend framework toward server-rendered HTML with progressive enhancement cut their median page load by 800 milliseconds and reduced their JavaScript bundle by 380 KB, and the team productivity went *up* because there was less to learn. The general direction of the wind, even in highly interactive frontend applications, is toward less framework, not more. The new tools — htmx, server-sent events, native CSS containment, the Web Components spec — keep making it easier to ship interactive applications without the framework tax.
-
-That doesn't mean React is wrong. React is right for plenty of applications. It's wrong for this one, because this one is a vanilla-JS SPA with no build step that already has a clear visual language, and adding a React runtime to render a single component would have torpedoed all of those properties for the convenience of a faster initial implementation.
-
-### The service map is the part nobody asked for
-
-The other thing in `waterfall.js` is the service-map renderer. The waterfall shows a single trace as a timeline. The service map shows the same trace as a graph: each unique service is a node, each inter-service span call is an edge, edges are weighted by call count, layout is circular. Seventy lines of canvas drawing:
+The implementation adds 70 lines to `waterfall.js`. It uses the same Canvas 2D API as the chart, lays out services on a circle (no force-directed solver), and draws edges with widths proportional to `1 + log2(count + 1)`:
 
 ```javascript
 function renderServiceMap(canvas, spans) {
@@ -298,10 +275,10 @@ function renderServiceMap(canvas, spans) {
   const dpr = window.devicePixelRatio || 1;
   const w = canvas.clientWidth || 500;
   const h = canvas.clientHeight || 220;
-  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.width = w * dpr;
+  canvas.height = h * dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  ...
   const byID = new Map(spans.map((s) => [s.span_id, s]));
   const edges = new Map();
   const nodes = new Set();
@@ -315,35 +292,35 @@ function renderServiceMap(canvas, spans) {
       }
     }
   }
-  ...
+  // ... layout and draw
 }
 ```
 
-The decision here was more interesting than the waterfall, because the service-map is a feature nobody asked for. The user said "I want to see traces." The waterfall is the obvious answer to that. The service-map was an extra. I added it because I noticed, while building the waterfall, that the trace data I was already fetching contained exactly enough information to also draw the call graph. The trace already had `parent_span_id` and `service_name` on every span. The set of unique services was a trivial pass. The directed edges were another trivial pass. The layout problem was "put N nodes on a circle and draw arrows between them." Seventy lines.
+The literature on graph drawing offers force-directed layouts such as Fruchterman-Reingold, ForceAtlas, and the dagre algorithm used by the Kubernetes Dashboard. These produce more aesthetically optimal layouts that minimize edge crossings and balance node placement. They are also computationally expensive and produce non-deterministic output. For traces involving three to eight services, which describes the typical case, a circular layout is both legible and deterministic. The same trace draws the same picture every time it is opened. This stability is valuable for operators forming muscle memory around recurring problem traces.
 
-The reason this matters is that it's an example of a feature where the marginal cost was near-zero and the marginal value was high. Once the waterfall was rendering, the service-map was an extra panel in the same div, fed by the same data, drawn by a separate function. The user opens a trace, sees the waterfall, *also* sees the call graph for that trace. The combination is more useful than either alone — the waterfall tells you *when* things happened, the service-map tells you *what called what*. Together they answer "why was this trace slow" much faster than either alone.
+The decision principle is to *pick the layout that matches the typical case and document the escape hatch for the atypical one*. The atypical case is a trace spanning dozens of services, where the circular layout becomes a tangle and the force-directed alternative becomes worth its computational cost. That case is served by Grafana Tempo via the E-0 integration.
 
-I left out a force-directed layout. The literature on graph drawing has decades of work on settled layouts that minimize edge crossings — Fruchterman-Reingold, ForceAtlas, dagre, ELK. They produce more "correct" graph drawings. For a single trace with three to eight services (which is the typical case), a settled layout is overkill. The circular layout is legible enough, deterministic (no animation, no settling, the same trace draws the same picture every time), and computable in a single pass through the node list with `Math.cos` and `Math.sin`. The expensive layout libraries are right when you have a hundred-node graph; for an eight-node graph they're a heat sink that doesn't change the user-visible answer.
+## The Dashboards Question: Microservice vs JSONB Column
 
-The general shape of this decision — "is this graph small enough that simple layout works" — comes up a lot in observability dashboards. Most "service map" visualizations are degenerate cases where the graph has ten or fewer nodes. The exotic layout machinery exists for the rare cases where someone is visualizing a full microservices estate, and even then the better answer is usually filtering and aggregation rather than smarter drawing. Pick the layout that matches the typical case; document the escape hatch for the atypical one.
+The fourth decision concerned the persistence and management of saved dashboard layouts. The microservices instinct, defensible in the abstract, is that a new bounded context deserves its own service. A `dashboards-api` with its own database, its own deployment, its own Helm chart, and its own oncall surface would be the textbook answer. The instinct was rejected.
 
----
+### The Cost of Service Boundaries
 
-## Fork four: I almost made dashboards a microservice
+The argument for splitting a new domain into its own service rests on properties that genuinely matter when they apply: independent deployment cadence, independent scaling, independent failure profile, independent team ownership. The argument fails when none of those properties apply. Dashboards, in the platform's architecture, share the same authentication model as tenants (OIDC bearer tokens validated by `pkg/oidc`), the same audit-log pipeline as tenant operations, the same database connection pool (Postgres via pgxpool), the same Helm template, the same release cadence, and the same oncall rotation. Splitting them out would have created a service whose every operational property was identical to `tenant-api`, deployed separately for no reason.
 
-The fourth decision was where to put the dashboards CRUD. A "dashboard" in our model is a named layout of panels, owned by a tenant, with each panel being a title and an ObserveQL query. The SPA needed to save them, load them, share them, and round-trip them as JSON.
+Sam Newman's *Building Microservices* (2nd edition, 2021) frames this trade explicitly: microservices are an organizational pattern as much as a technical one. The benefits accrue when independent teams own independent services. They do not accrue when one team operates a portfolio of services that all share infrastructure. The Phase E team is a single small team operating a single product. The benefits of splitting dashboards out would have been zero. The costs — a new deployment, a new oncall surface, a new database to back up — would have been real.
 
-The instinct, again from years of distributed-systems work, was: this is a new bounded context, therefore it deserves its own service. Call it `dashboards-api`, give it its own Postgres instance, its own deployment, its own SLOs, its own audit log. Let it evolve independently of the other services. That's the idiomatic microservices answer.
+DHH's "The Majestic Monolith" essay makes the same point in a different vocabulary: the right answer for a small team is usually to keep things together until concrete pressure forces them apart. The pressure to split dashboards out did not exist. Dashboards became a new file in `tenant-api`.
 
-I almost wrote it. I had the directory laid out: `services/dashboards-api/`, with a `cmd/main.go`, a `store/`, a `migrations/`. I'd sketched the API surface, the Postgres schema, the Helm chart sub-template. It would have been about a week of work, all of it familiar.
+### The Schema Choice
 
-Then I asked, the way I try to remember to ask: *what specifically would this service do that tenant-api can't?*
+With dashboards living inside `tenant-api`, the remaining design question was how to model the data. Two paths were available. The first was a normalized schema where each panel is a first-class row in a `dashboard_panels` table with foreign keys to `dashboards`. The second was an opaque `JSONB` column in the `dashboards` table where the entire panel layout is stored as a single JSON document.
 
-The honest answer was: nothing. Dashboards are tenant-scoped. The auth model is the same as tenant-api's. The audit-log path is the same. The Helm chart, the metrics endpoints, the OIDC validation, the database connection pool, the migrations infrastructure — all of it would be cut-and-paste from tenant-api. The only thing that would have been different was a single new table and five new HTTP handlers.
+The normalized schema is the textbook relational answer. It makes the data shape self-documenting, allows queries against panel attributes (such as "find all panels using metric X"), and enforces referential integrity at the database layer. The PostgreSQL documentation on table inheritance and foreign keys provides extensive support for this pattern.
 
-The microservices instinct comes from a useful place. It's a reaction to the monolith pattern where every team commits to one big codebase and ships behind a release train that's gated on everyone else's tests. Splitting services lets teams ship independently, scales independently, fails independently. Those are real properties. They're properties we got nothing from by splitting dashboards out, because we have one team, one release pipeline, and dashboards have no independent scaling or failure profile.
+The schema was rejected because the platform's server-side code never queries inside a panel. The panel schema is owned entirely by the SPA. When the SPA adds a new panel type or attribute, no server change is required. The dashboards table exists to round-trip a JSON document between the browser and Postgres, with the server treating the contents as opaque bytes. This is precisely the use case for which JSONB exists. The PostgreSQL JSONB documentation notes that the binary JSON type is optimized for "data that won't be processed inside the database," which matches the requirement exactly.
 
-So dashboards went into tenant-api as a single new file. The migration is 60 lines of SQL:
+The migration in `services/tenant-api/store/migrations/002_dashboards.sql` is 60 lines:
 
 ```sql
 CREATE TABLE IF NOT EXISTS dashboards (
@@ -355,39 +332,36 @@ CREATE TABLE IF NOT EXISTS dashboards (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
 CREATE INDEX IF NOT EXISTS dashboards_tenant_idx
     ON dashboards (tenant_id, updated_at DESC);
-
 CREATE UNIQUE INDEX IF NOT EXISTS dashboards_tenant_name_uq
     ON dashboards (tenant_id, name);
-
 ALTER TABLE dashboards ENABLE ROW LEVEL SECURITY;
-
 DROP POLICY IF EXISTS dashboards_isolation ON dashboards;
 CREATE POLICY dashboards_isolation ON dashboards
     USING (tenant_id = current_setting('app.tenant_id', true));
+CREATE OR REPLACE FUNCTION touch_dashboards_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS dashboards_touch_updated ON dashboards;
+CREATE TRIGGER dashboards_touch_updated
+    BEFORE UPDATE ON dashboards
+    FOR EACH ROW EXECUTE FUNCTION touch_dashboards_updated_at();
 ```
 
-The handlers added maybe 130 lines to `tenant-api/cmd/main.go`. The store added another 110 lines to `tenant-api/store/store.go`. That's it. The whole dashboards CRUD surface lives within the existing auth, deployment, observability, and audit-log paths. There's no new service to operate, no new Postgres database to back up, no new Helm chart sub-template, no new on-call rotation.
+Three design properties survive into this schema. The first is `(tenant_id, name) UNIQUE`, which gives the SPA an unambiguous "Open" semantics — the operator types a dashboard name and gets exactly one result. Duplicate POST attempts return a structured 409 Conflict that the SPA can surface as a rename prompt.
 
-The interesting decision inside that decision was making the `layout` column a JSONB blob rather than a normalized schema. The normalized schema would have been roughly:
+The second is Row-Level Security keyed on `current_setting('app.tenant_id', true)`, which provides a Postgres-side safety net against application-layer mistakes. Even if the Go code forgot a `WHERE tenant_id = $1` clause, the database would refuse cross-tenant reads. The PostgreSQL Row Security Policies documentation describes this pattern as the standard for multi-tenant data isolation, and it is used consistently across the platform's data plane.
 
-```
-dashboards (id, tenant_id, name, ...)
-dashboard_panels (id, dashboard_id, position, title, type, query, ...)
-panel_settings (panel_id, setting_key, setting_value)
-```
+The third is the `BEFORE UPDATE` trigger that touches `updated_at` automatically. This relieves the application layer of the responsibility to remember the field on every PATCH. The Postgres trigger documentation cautions that triggers can become invisible action-at-a-distance over time, but for narrowly scoped behaviors like timestamp maintenance the benefit clearly outweighs the cost.
 
-This is the "right" relational shape. Each panel is a first-class entity, queryable independently, with referential integrity to its dashboard. You can do things like "find all panels using deprecated metric X" with a single SQL query. The schema makes the data shape explicit and self-documenting.
+### The Validation Trap
 
-I rejected it because *the server never queries inside a panel*. The dashboards table exists to round-trip a JSON blob between the browser and Postgres. The browser sends `{name, layout: {panels: [...]}}`, the server stores it, the server retrieves it, the browser deserializes it. The schema of the panels themselves is owned entirely by the SPA. Every time we add a new panel type or a new panel attribute, normalizing it would force a Postgres migration, even though the only consumer of that change is JavaScript code that already knows the new shape.
-
-JSONB is what you reach for when you have a document that the server treats as opaque. The Postgres documentation has a section on exactly this pattern, and the rule of thumb it suggests — *if you don't index inside it, store it as JSON* — fits us perfectly. We never index inside the layout. We index on `(tenant_id, updated_at)` to list dashboards, and on `(tenant_id, name)` for the uniqueness constraint. The contents of `layout` are an opaque blob from Postgres's perspective.
-
-The trade is that the server has no way to enforce schema on the panels. A bug in the SPA could write a `{}` layout or a `[1, 2, 3]` layout or a `"not even json"` layout. I caught the last one with a test, and it's worth telling that story because it's a useful reminder of how validation can pass while still being wrong.
-
-My first version of the validation was this, in `services/tenant-api/cmd/main.go`:
+The handlers added approximately 130 lines to `tenant-api/cmd/main.go`. The validation logic for `POST /v1/dashboards` initially appeared straightforward: parse the request body, verify the layout field decodes as valid JSON, store the result. The first implementation read:
 
 ```go
 var probe any
@@ -397,15 +371,15 @@ if err := json.Unmarshal(req.Layout, &probe); err != nil {
 }
 ```
 
-The idea was: parse the layout, fail if it's malformed. Reasonable. I wrote a test:
+A test was written:
 
 ```go
 {"bad layout json", `{"tenant_id":"acme","name":"x","layout":"not-json"}`, "tenant_id, name, layout required"},
 ```
 
-The test expected the payload `{"tenant_id":"acme","name":"x","layout":"not-json"}` to be rejected. The test failed: the payload was accepted. I stared at it for a minute before realizing what was happening. The string `"not-json"` is valid JSON. It's a JSON string, which is one of the six JSON types (object, array, string, number, boolean, null). `json.Unmarshal` happily parses it into the `probe` variable as a Go string. The validation said "is this valid JSON" and the answer was yes.
+The test failed. The payload was accepted. The reason is that the string `"not-json"` is valid JSON; specifically, it is a JSON string, which is one of the six JSON types defined by RFC 8259 (the JSON specification): object, array, string, number, boolean, and null. The validator asked "is this valid JSON" and the answer was correctly yes. What the validator intended to ask was "is this a JSON object."
 
-What I actually meant was "is this a JSON object." The fix was four lines:
+The fix introduced an `isJSONObject` helper:
 
 ```go
 func isJSONObject(raw json.RawMessage) bool {
@@ -417,7 +391,7 @@ func isJSONObject(raw json.RawMessage) bool {
 }
 ```
 
-By trying to unmarshal into `map[string]json.RawMessage`, we ensure the top-level value is an object — strings, numbers, arrays, primitives all fail. Then I updated the test matrix to cover all eight shapes the validator should and shouldn't accept:
+By attempting to decode into `map[string]json.RawMessage`, the helper succeeds only when the top-level value is a JSON object. Primitives, arrays, and strings all fail. The validation matrix was extended to cover all eight relevant shapes:
 
 ```go
 cases := []struct {
@@ -436,15 +410,13 @@ cases := []struct {
 }
 ```
 
-All eight pass now. The category of bug I caught — "valid input that exercises an unexpected path through the validator" — is the most useful thing a test can catch. The test was worth more than the validation it tested, because the validation wouldn't have surfaced as buggy in any real-world traffic. The SPA always sends objects. The bug would have sat there as a latent way for a malicious or buggy client to write an unparseable row into Postgres, which someone would discover a year later when trying to retrieve their dashboard.
+All eight pass. The category of bug — valid input that exercises an unexpected path through the validator — would not have appeared in any real-world traffic, because the SPA always sends objects. It would have sat in the codebase as a latent hazard, exploitable by a malicious or buggy client, surfaced years later when an unparseable row caused a dashboard load to fail. The principle, as old as software engineering, is that *tests should fail in the way that catches the bugs you would ship*. The OWASP guidance on input validation makes the same point: validators must constrain inputs to the intended shape, not merely to the parseable shape.
 
-The lesson, which is older than software, is *your test should fail in the way that catches the bug you would ship*. A test that just asserts "the happy path works" is decoration. A test that picks at the edges of the validation matrix is engineering.
+### Share-by-URL Without a Sharing Service
 
-### Share-by-URL without a sharing service
+The remaining design question for dashboards was how to support sharing them between users. The wrong path is to build a "shared dashboards" service with its own permission model, expiry logic, revocation lists, and audit trail. Datadog and New Relic both ship variations on this pattern. The implementation cost is months of engineering and a permanent oncall surface for "the share-link service is down."
 
-The other interesting subdecision in the dashboards layer was how to ship "share this dashboard with a teammate." Every product has this feature; almost every product gets it wrong. The wrong way is to build a "shared dashboards" service with its own access tokens, its own permission model, its own database table for share grants, its own audit trail, and an oncall surface for "the share-link service is down." Datadog has one of these. New Relic has one of these. They cost a real engineering team's quarterly roadmap to maintain.
-
-The right way, for our scope, was three lines of JavaScript:
+The right path, for the platform's scope, is seven lines of JavaScript:
 
 ```javascript
 function shareCurrentDashboard() {
@@ -456,7 +428,7 @@ function shareCurrentDashboard() {
 }
 ```
 
-Plus four lines on the page-load path:
+Paired with four lines on the page-load path:
 
 ```javascript
 function tryOpenFromHash() {
@@ -469,71 +441,71 @@ function tryOpenFromHash() {
 }
 ```
 
-The whole sharing story is: paste the URL into Slack, recipient clicks the URL, ui-server serves the SPA, SPA reads the hash, SPA fetches the dashboard by UUID through the existing tenant-api endpoint, SPA renders the panels. The recipient still has to authenticate — the existing OIDC or bearer-token middleware gates the API call. The recipient still has to be authorized for that tenant — the tenant-api endpoint enforces RLS at the database. The link is a pointer to the dashboard; it's not a grant of access to anyone who has the URL.
+The sharing semantics are: paste the URL into a chat channel, the recipient clicks it, the ui-server serves the SPA, the SPA reads the hash, the SPA fetches the dashboard by UUID through the existing tenant-api endpoint, and the SPA renders the panels. The recipient must still authenticate through the existing OIDC or bearer-token middleware. The recipient must still be authorized for the tenant — Row-Level Security enforces this at the database. The link is a *pointer* to the dashboard, not a *grant* of access to anyone holding the URL.
 
-This is the right model because it matches what users actually want. They don't want to grant a one-off-link-with-its-own-permissions. They want to say "go look at this thing I made, you already have access to it, here's the URL." The model where the link itself confers access is the wrong default — it's the model that ships data leaks, the model where someone shares a link in Slack and a former employee with cached credentials can still load it for the next 90 days. Avoiding that mode by simply not having it is much easier than building the controls to make it safe.
+This is the correct sharing semantics for the operator workflow. Users do not want to grant one-off-link-with-its-own-permissions; they want to say "look at this thing I made, you already have access to it." The model where the link itself confers access is the wrong default. It ships data leaks. It produces the situation where a link posted in a chat channel grants access for an undefined period to anyone who later sees it. Avoiding that mode by not having it is much simpler than building the controls required to make it safe.
 
-The cross-tenant case is the place where this decision pays off most clearly. Datadog supports cross-organization sharing. The implementation involves a separate sharing service, signed tokens with embedded scope, expiry logic, revocation lists, a UI for managing shares, and an audit trail. It's months of work. We chose to not support cross-tenant sharing in v1 at all. The operator who wants to move a dashboard from tenant A to tenant B exports the JSON from A, imports it into B. The audit trail is "operator imported this dashboard at this time" rather than "a sharing token granted access for this duration." The first is much cleaner. The second is what you build when you can't avoid it.
+Cross-tenant sharing in v1 is not supported. The operator who wants to move a dashboard between tenants exports the JSON from one and imports it into the other. The audit trail becomes "operator imported this dashboard at this time," which is cleaner than "a sharing token granted access for this duration." The first model is what is built when the engineering team chooses to make the simple case work; the second model is what is built when the simple case is not adequate. The platform is in the first regime.
 
-The principle is *do the thing that doesn't require building the infrastructure*. URL fragments are infrastructure that already exists in every browser since 1993. Authentication is infrastructure that already exists in our system. Authorization is infrastructure that already exists. Combining things that already exist into a "share" feature costs seven lines of JavaScript. Building a sharing service costs months. The seven-line version is also more secure because it has no novel surface area to get wrong.
+The principle expressed by the share-by-URL design is to *combine existing infrastructure rather than building new infrastructure*. URL fragments are infrastructure that has existed in every browser since 1993. Authentication is infrastructure that already exists in the platform. Authorization is infrastructure that already exists. Combining these into a "share" feature costs eleven lines of JavaScript and zero new operational surface.
 
----
+## The Compatibility Question: PromQL and LogQL Without Importing Prometheus
 
-## Fork five: I almost imported prometheus/promql
+The fifth decision was the largest. To support operators migrating from Prometheus and Loki, the query engine needed to accept PromQL on `/prom/api/v1/{query,query_range}` and LogQL on `/loki/api/v1/{query,query_range}`, translate these queries into ClickHouse SQL, execute them through the existing executor, and reshape the results into the response shapes that Grafana and Prometheus alertmanager expect. The obvious answer was to import the Prometheus and Loki parsers and use them as the language frontends.
 
-The fifth decision was the biggest. To let existing Grafana panels and Prometheus alert rules keep working against ObserveX, the query engine needed to accept PromQL on its `/prom/api/v1/{query,query_range}` endpoints and translate it into ClickHouse SQL. Similarly for LogQL on the `/loki/api/v1/*` endpoints.
+### The Cost of Importing Upstream Parsers
 
-The Prometheus project ships a perfectly good PromQL parser. It's at `github.com/prometheus/prometheus/promql/parser`. It's been in production for a decade. It handles every corner of the language. There is no chance I'm going to write a more correct PromQL parser than the one used by the millions of Prometheus deployments worldwide.
+The Prometheus repository ships its PromQL parser at `github.com/prometheus/prometheus/promql/parser`. It is the same code that runs in every Prometheus deployment worldwide, has been continuously refined for over a decade, and handles every corner of the PromQL language correctly. There is no plausible scenario in which a hand-written parser would be more correct.
 
-So I almost imported it. I added the import line, ran `go mod tidy`, and watched my `go.sum` grow.
+The cost of importing it, however, is substantial. The Prometheus parser does not ship as a standalone module. It is part of the Prometheus repository and pulls in the `model/labels` package, the `model/metadata` package, the `tsdb` chunk encoder, the `storage` interfaces, and a transitive dependency graph that bottoms out at several copies of `gogo/protobuf` (now deprecated in favor of `google.golang.org/protobuf`), `klauspost/compress`, `prometheus/client_golang`, and assorted hash libraries. Adding the import grows `go.sum` by 47 lines and grows the query-engine binary from 64 MB to 81 MB.
 
-It grew a lot. The Prometheus parser doesn't ship as a standalone module. It's part of the Prometheus repo, which means importing it pulls in the Prometheus `model/labels` package, the `model/metadata` package, the `tsdb` package's chunk encoding, the `storage` package's interfaces, and a chain of transitive dependencies that bottoms out at several copies of `gogo/protobuf` (deprecated), `klauspost/compress`, `prometheus/client_golang`, and assorted hash libraries. My `go.sum` gained 47 lines. The compiled query-engine binary grew from 64 MB to 81 MB.
+This cost analysis is the standard outcome of importing a parser from a project whose primary purpose is something other than being a parser library. The dependencies exist for legitimate reasons in the parent project: Prometheus is a complete time-series database, and its parser interoperates with the rest of the system. The dependencies pulled in by importing the parser reflect a coupling that is correct in the upstream context but irrelevant in the downstream consumer's context.
 
-This is the part where I want to be careful, because the easy critique — "Prometheus has too many dependencies" — is the kind of thing that makes contributors to good projects roll their eyes. Prometheus's dependency graph is the way it is for legitimate reasons. They support a TSDB, they support remote write, they support OpenMetrics, they support exposition formats. The parser is one corner of a much larger system. Importing the parser pulls in the rest of the system because the parser interoperates with the rest of the system. That's how Go modules work. The dependency graph reflects a coupling that exists for good reasons in the parent project.
+### The Scoping Decision
 
-The issue isn't that Prometheus has too many dependencies. The issue is that *I don't want them*. ObserveX is not a Prometheus consumer. ObserveX has its own `metrics` table schema, its own label model (`attributes Map(String, String)` in ClickHouse), its own time-bucketing semantics. The Prometheus parser gives me an AST. I then have to walk the AST and translate it into ClickHouse SQL. The translation layer is what I'm actually building. The parser is just the front-end.
+The alternative is to scope the language deliberately and implement a parser for the chosen subset. The question becomes: how much of PromQL is actually used in production?
 
-So the question becomes: *how much of the language do I actually need to translate*?
+The answer, derived from reading the PromQL specification, surveying the Grafana datasource source code to identify the expression shapes the panel builder generates, and examining approximately thirty real-world Prometheus alert rules from public examples, is sobering. Roughly twenty percent of the PromQL language accounts for ninety-five percent of real usage. Vector selectors with simple label matchers, range vectors with simple durations, the aggregation operators (`sum`, `avg`, `min`, `max`, `count`) with optional `by` and `without` modifiers, the rate functions (`rate`, `irate`, `increase`) over range vectors, the `*_over_time` family, `quantile` with literal phi, scalar arithmetic, and scalar comparison. This is what dashboard panels and alert rules use.
 
-I did the work. I read through the PromQL spec, plus the Grafana datasource source code to see what shapes of expressions Grafana actually generates from its panel builder UI, plus a survey of about thirty real-world Prometheus alert rules from public examples. The answer was sobering: roughly twenty percent of the language is responsible for about ninety-five percent of real usage. Vector selectors with simple matchers, range vectors with simple durations, `sum/avg/min/max/count` with optional `by/without`, `rate/irate/increase` over a range, the `*_over_time` family, `quantile`, scalar arithmetic, and scalar comparison. That's it. That's almost every panel and almost every alert.
+Constructs like `topk`, `bottomk`, `histogram_quantile`, subqueries (the `[5m:1m]` shape), `@`-modifiers, offset modifiers, and vector-on-vector arithmetic exist in the language and are used. They are used by a smaller audience and are frequently the source of the trickiest Prometheus performance pathologies. The compatibility shim does not support them. The user who needs them should stay with Prometheus or use the Grafana ClickHouse datasource shipped in E-0.
 
-Things like `topk`, `bottomk`, `histogram_quantile`, subqueries, `@`-modifiers, offset modifiers, vector-on-vector arithmetic — they exist, they're used, but they're used by a much smaller audience and they're often the source of the trickiest Prometheus performance pathologies. I deliberately did *not* support them.
+The scoping decision has a property that the import-the-upstream-parser path lacks: the parser itself becomes the contract. If the user writes `topk(5, rps)`, the custom parser does not recognize `topk` and produces a parse error. The user sees "promql: parse: unknown function topk." If the Prometheus parser had been imported, the AST would have been accepted, and the translator would later have to detect the unsupported construct and produce an error like "unsupported function: topk." The error would happen further from the cause, with less context for the user. The parser-as-contract model produces better error messages essentially for free.
 
-This is where a controversial decision became defensible. By scoping down, the *parser itself becomes the contract*. If the user writes `topk(5, rps)`, my parser doesn't know what `topk` is, so it produces a parse error. The user sees "promql: parse: unknown function topk." If I'd imported the Prometheus parser, I'd have parsed `topk(5, rps)` successfully and then had to detect it during translation and return an error like "unsupported: topk." That's worse, because the error happens further from the cause. The parser-as-contract model gives a better error message essentially for free.
+The Loki project made the same architectural choice for the same reasons. LogQL has different semantics from PromQL, requires a controlled subset, and is implemented as a hand-written parser specific to Loki rather than a reuse of any upstream language. VictoriaMetrics built MetricsQL by forking the Prometheus parser and then diverging significantly. The pattern of compatibility shims building scoped parsers rather than importing comprehensive ones is well-established.
 
-It also dodges a class of subtle bugs. If a user writes a query I haven't translated, the parser fails and they get a clear error. If I'd accepted the AST and tried to translate selectively, I'd inevitably have missed some path through the AST that I should have rejected, and the user would have gotten silently-wrong results. Loki made the same call: their LogQL parser supports a deliberately-scoped subset of expressions, not a superset that gets filtered later.
+### The PromQL Implementation
 
-So I wrote the parser. The full PromQL pipeline lives in `pkg/promql/` and weighs 1,100 lines of non-test Go, broken into four files: a hand-rolled tokenizer (`lex.go`, 245 lines), a recursive-descent parser building an AST (`parser.go`, 404 lines), a translator from AST to ClickHouse SQL (`translate.go`, 343 lines), and a thin public API (`promql.go`, 108 lines). The test file is 206 lines covering 25 test cases across the major code paths.
+The PromQL pipeline lives in `pkg/promql/` and totals 1,100 lines of non-test Go across four files. A hand-rolled tokenizer (`lex.go`, 245 lines) produces tokens from source text. A recursive-descent parser (`parser.go`, 404 lines) builds an AST. A translator (`translate.go`, 343 lines) lowers the AST into ClickHouse SQL. A thin public API (`promql.go`, 108 lines) ties the three together. The test file (`promql_test.go`, 206 lines) covers 25 test cases including aggregations, range functions, binary operations, rejection of unsupported constructs, duration parsing, and injection safety.
 
-The tokenizer is worth showing because it includes a trick I'm pleased with. PromQL durations like `5m` are written as adjacent number-then-identifier, but they need to be a single token for the parser. So the tokenizer scans the source into a stream of tokens normally, then folds adjacent `(tkNumber, tkIdent)` pairs where the identifier is a duration unit:
+The tokenizer includes a deliberate two-pass design. The main scanning pass produces a token stream using one character of lookahead. A subsequent fold pass collapses adjacent `(tkNumber, tkIdent)` pairs into a single `tkDuration` token when the identifier is a duration unit:
 
 ```go
 func foldDurations(in []token) []token {
-	out := make([]token, 0, len(in))
-	for i := 0; i < len(in); i++ {
-		t := in[i]
-		if t.kind == tkNumber && i+1 < len(in) && in[i+1].kind == tkIdent && isDurationUnit(in[i+1].val) {
-			out = append(out, token{tkDuration, t.val + in[i+1].val, t.pos})
-			i++
-			continue
-		}
-		out = append(out, t)
-	}
-	return out
+  out := make([]token, 0, len(in))
+  for i := 0; i < len(in); i++ {
+    t := in[i]
+    if t.kind == tkNumber && i+1 < len(in) && in[i+1].kind == tkIdent && isDurationUnit(in[i+1].val) {
+      out = append(out, token{tkDuration, t.val + in[i+1].val, t.pos})
+      i++
+      continue
+    }
+    out = append(out, t)
+  }
+  return out
 }
 
 func isDurationUnit(s string) bool {
-	switch s {
-	case "ms", "s", "m", "h", "d", "w", "y":
-		return true
-	}
-	return false
+  switch s {
+  case "ms", "s", "m", "h", "d", "w", "y":
+    return true
+  }
+  return false
 }
 ```
 
-This is much simpler than trying to handle duration parsing in the main scanner, because the main scanner can stay regular (one character of lookahead) and the duration concept is handled as a post-process. The cost is one O(n) extra pass. The benefit is that the main tokenizer doesn't have to know what units exist; only the post-processor does.
+The two-pass design simplifies the main scanner — it stays regular with single-character lookahead — and isolates the duration-unit knowledge in a small, replaceable function. The cost is one O(n) extra pass that does not measurably affect tokenization throughput.
 
-The translator is where the interesting work happens. A query like `sum(rate(http_requests_total{service="api"}[5m])) by (code)` lowers to:
+The translator emits ClickHouse SQL of a fixed shape. A PromQL expression of the form `sum(rate(http_requests_total{service="api"}[5m])) by (code)` lowers to:
 
 ```sql
 SELECT toStartOfInterval(timestamp, INTERVAL 30 SECOND) AS t,
@@ -547,60 +519,102 @@ GROUP BY t, lbl_code
 ORDER BY t
 ```
 
-With args `[]any{"http_requests_total", "api", startTime, endTime}`. The `rate()` semantics are approximated inside the bucket via `(max(value) - min(value)) / step_seconds`, which is not identical to Prometheus's per-sample rate calculation but is close enough for the vast majority of dashboard panel use cases. I document the discrepancy in ADR-0033 because that's the honest thing to do.
+With bound arguments `[]any{"http_requests_total", "api", startTime, endTime}`. The `rate()` semantic is approximated inside the bucket via `(max(value) - min(value)) / step_seconds`. This is not bit-identical to the Prometheus implementation, which computes per-sample rates with extrapolation at the bucket boundaries. The discrepancy is documented in ADR-0033 and is acceptable for the typical dashboard panel use case. Power users who require exact Prometheus semantics should remain on Prometheus.
 
-The injection-safety story is the part I want to dwell on. Every user-supplied value — every label-match RHS, every line-filter string, every time bound — binds as a `?` parameter. The parser never gets to put user input directly into a SQL string. Even more importantly, the label *names* (which become `attributes['<key>']` lookups in ClickHouse, where the key has to be in the SQL string because ClickHouse doesn't parameterize map subscripts) go through a strict regex filter:
+### Injection Safety as an Architectural Property
+
+The translator parameterizes every user-supplied value. Every label-match right-hand side, every line filter string, every time bound is bound as a `?` placeholder. The parser does not have a path that would interpolate user input into the SQL string. Even label *names* — which must appear inline in the SQL because ClickHouse does not parameterize map subscripts in the `attributes['key']` syntax — are passed through a strict regex filter:
 
 ```go
 func sqlEscape(s string) string {
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-', r == '.':
-		default:
-			return "INVALID"
-		}
-	}
-	return s
+  for _, r := range s {
+    switch {
+    case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-', r == '.':
+    default:
+      return "INVALID"
+    }
+  }
+  return s
 }
 ```
 
-A label name that contains a quote character returns `INVALID`, which produces a SQL fragment that matches nothing. The attacker who tries to inject `'); DROP TABLE metrics; --` as a label name gets a query like `attributes['INVALID']` which is harmless. The unit test for this is one of the most satisfying tests I've ever written, because it tries every shape of injection I could think of and verifies that the malicious bytes appear in the bound args, not in the SQL string:
+A label name containing a quote character or any other SQL-significant byte returns `INVALID`, producing a SQL fragment that matches nothing. An attacker attempting to inject `'); DROP TABLE metrics; --` as a label name receives a query like `attributes['INVALID']`, which is harmless. The OWASP SQL Injection Prevention Cheat Sheet identifies this approach — strict allowlist validation of any value that cannot be parameterized — as the canonical defense for identifier-style inputs.
+
+The corresponding unit test verifies the property by attempting injection and asserting that the malicious bytes appear in the bound arguments rather than in the SQL string:
 
 ```go
 func TestLabelMatcherSafety(t *testing.T) {
-	r, err := Translate(params(`rps{evil="' OR 1=1 --"}`))
-	if err != nil {
-		t.Fatalf("translate: %v", err)
-	}
-	if strings.Contains(r.SQL, "OR 1=1") {
-		t.Errorf("injection bytes leaked into SQL:\n%s", r.SQL)
-	}
-	found := false
-	for _, a := range r.Args {
-		if a == `' OR 1=1 --` {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("malicious value missing from Args: %v", r.Args)
-	}
+  r, err := Translate(params(`rps{evil="' OR 1=1 --"}`))
+  if err != nil {
+    t.Fatalf("translate: %v", err)
+  }
+  if strings.Contains(r.SQL, "OR 1=1") {
+    t.Errorf("injection bytes leaked into SQL:\n%s", r.SQL)
+  }
+  found := false
+  for _, a := range r.Args {
+    if a == `' OR 1=1 --` {
+      found = true
+      break
+    }
+  }
+  if !found {
+    t.Errorf("malicious value missing from Args: %v", r.Args)
+  }
 }
 ```
 
-The test passes because the architecture makes it pass. There's no point in the translator where I'd be tempted to `fmt.Sprintf("%s = '%s'", col, val)`. The whole flow is parameterized by design. This is the kind of property you get when you control the entire pipeline. If I'd used the Prometheus parser, I'd still own the translation layer, but I'd have less visibility into what shapes of input it accepts and therefore less confidence that my injection-safety story holds at the edges.
+The test passes because the architecture makes it pass. There is no point in the translator where the temptation to `fmt.Sprintf("%s = '%s'", col, val)` exists; the whole pipeline is parameterized by design. This is the property that controlling the entire pipeline produces. If the Prometheus parser had been imported, the translation layer would still need to enforce the same parameterization discipline, but with less visibility into what shapes of input it accepts and therefore less confidence that the discipline holds at the edges.
 
-The LogQL story is parallel and simpler — about 470 lines of non-test Go covering stream selectors, line filters, and `count_over_time` / `rate` / `bytes_over_time` for metric-over-log queries. Same parameterization story, same parser-as-contract story, same scoping decision to support the subset that Grafana panels and Loki alert rules actually use.
+### The LogQL Translator
 
-Both packages together total around 1,600 lines of focused, tested Go. Compared to the Prometheus + Loki dependency footprint they replace — which would have been maybe forty thousand lines of transitive Go pulled in for the parser alone — they're a rounding error. Compared to the test surface they earned — 60+ unit tests including injection safety, edge-case rejection, duration parsing, label-mapping correctness — they're a much-better-understood piece of code than anything I'd have gotten from the upstream parsers, where I'd have been a downstream consumer with no real model of the input grammar.
+The LogQL pipeline in `pkg/logql/` totals 470 lines of non-test Go in a single file (`logql.go`), with 156 lines of tests. Its parser is simpler than the PromQL parser because LogQL has fewer compositional operators. The supported subset includes stream selectors with `=`, `!=`, `=~`, and `!~` matchers, line filters (`|=`, `!=`, `|~`, `!~`), and three metric-over-log functions (`count_over_time`, `rate`, `bytes_over_time`).
 
-This is the choice I'd most hesitate to recommend to other teams. The Prometheus and Loki parsers are good. If you have any uncertainty about what PromQL queries you'll need to support, *use the upstream parser*. The cost of being wrong about your subset is high: every query a user types that you reject is a moment of "this product is missing things." If your bet is "I know exactly what I need to support and I can defend that scope," the small parser wins. If your bet is "I want to be PromQL-compatible," the upstream parser wins. We were the former case because the compatibility shim is a migration aid, not the primary query language. Users who want everything PromQL can do are users who should keep using Prometheus, and that's fine.
+A useful design property of the LogQL translator is its mapping of common label names to first-class columns in the `logs` table. The `service` and `service_name` labels both map to the `service_name` column. The `severity` and `level` labels both map to the `severity` column. The `trace_id` and `span_id` labels map to their respective first-class columns. Any other label name becomes an `attributes['<key>']` lookup, matching the PromQL translator's pattern. This mapping makes LogQL queries written against Loki schemas work without modification against ObserveX's slightly different column layout.
 
----
+A LogQL query of the form `{service="checkout-api"} |~ "error|fail" != "skip"` lowers to:
 
-## What it actually cost
+```sql
+SELECT timestamp, severity, service_name, body, trace_id, span_id, attributes
+FROM   logs
+WHERE  service_name = ?
+  AND  match(body, ?)
+  AND  positionCaseInsensitive(body, ?) = 0
+  AND  timestamp BETWEEN ? AND ?
+ORDER BY timestamp DESC
+LIMIT ?
+```
 
-Let me put real numbers on what those five forks cost in aggregate, because the only honest way to defend "write the small library" as a principle is to count.
+The `match(body, ?)` invocation uses ClickHouse's RE2-compatible regex engine, which is documented in the ClickHouse string functions reference. The line filter is parameterized the same way as PromQL: regex patterns are validated at parse time (a `regexp.Compile` call that returns an error before the translator emits SQL), and the regex string itself is bound as a `?` parameter rather than interpolated.
+
+The injection-safety test for LogQL mirrors the PromQL version and produces the same assurance:
+
+```go
+func TestInjectionSafety(t *testing.T) {
+  r, err := Translate(params(`{service="' OR 1=1 --"} |= "; DROP TABLE logs;"`))
+  if err != nil {
+    t.Fatalf("translate: %v", err)
+  }
+  if strings.Contains(r.SQL, "OR 1=1") || strings.Contains(r.SQL, "DROP TABLE") {
+    t.Errorf("injection bytes in SQL:\n%s", r.SQL)
+  }
+  if r.Args[0] != `' OR 1=1 --` || r.Args[1] != `; DROP TABLE logs;` {
+    t.Errorf("malicious values weren't parameterised: %v", r.Args)
+  }
+}
+```
+
+### Tenant Pinning After Translation
+
+The translators produce SQL that does not yet include a tenant predicate. Tenant pinning happens after translation, in the query engine's request handler, by wrapping the inner SQL with `SELECT * FROM (<inner>) WHERE tenant_id = ?` and appending the tenant ID — derived from the authenticated request context — to the argument list. The PromQL or LogQL string can never name a tenant. This design eliminates the entire class of authorization-bypass attacks where a malicious query string attempts to read another tenant's data. The tenant identity is not in the query; it is in the auth context.
+
+The pattern follows Hyrum's Law, which observes that "with a sufficient number of users of an API, it does not matter what you promise in the contract: all observable behaviors of your system will be depended on by somebody." By keeping the tenant predicate strictly outside the query language, the platform reserves the right to evolve the language semantics without ever creating a path that could leak cross-tenant data.
+
+## The Cost of Independence
+
+Five forks, five rejections of the obvious library, five custom implementations. The aggregate cost is the metric that defends or refutes the principle. The accounting is straightforward and worth being precise about.
+
+### New Code
 
 The total new code added across all five layers of Phase E:
 
@@ -614,61 +628,148 @@ The total new code added across all five layers of Phase E:
 | `shims.go` (E-5) | 310 | (covered by pkg tests) |
 | **Total** | **2,843 Go + 536 JS** | **484 test LOC** |
 
-The dependency-graph delta in `go.mod`: zero new top-level modules. Zero new transitive modules. The `go.sum` file gained exactly zero lines. (I verified with `git diff --stat go.sum` between the v1.0.0 and v1.1.0 tags.)
+### Dependency Graph Delta
 
-The binary-size delta: the query-engine binary went from 67.5 MB to 67.9 MB, a 0.6 percent increase. The ui-server binary went from 23.8 MB to 23.9 MB, a 0.4 percent increase. The new code is small relative to the Go runtime and the existing dependencies.
+The `go.mod` file before and after Phase E was compared with `git diff --stat go.sum`. The delta is zero lines. No new top-level Go modules. No new transitive Go modules. No new JavaScript dependencies (the SPA imports nothing). The entire Phase E feature surface was built on the standard library and on dependencies the platform already had.
 
-The CI delta: the test job took 45 seconds longer (the two new test packages, plus the new test file in the query-engine). The build job was unchanged. The lint job was unchanged. No new external services in CI.
+### Binary Size Delta
 
-The runtime cost: no new processes, no new containers, no new Helm sub-charts beyond a single ConfigMap for the dashboards migration, no new operational dashboards beyond the one I'd already shipped in Phase E-0.
+The query-engine binary grew from 67.5 MB to 67.9 MB, a 0.6 percent increase. The ui-server binary grew from 23.8 MB to 23.9 MB, a 0.4 percent increase. The new code is small relative to the Go runtime and the existing dependencies. By way of comparison, importing the Prometheus PromQL parser alone (as measured in an earlier experimental branch) grew the query-engine binary by 17 MB, or 25 percent.
 
-For comparison, a hypothetical "import all the libraries" version of the same feature set would have brought in:
+### CI and Operational Delta
 
-- uPlot (38 KB embedded asset, license header, vendor file)
-- jaeger-ui (entire React + Redux + Webpack runtime, several megabytes shipped to the browser)
-- A real PromQL parser (47 lines in `go.sum`, several MB of binary growth)
-- A real LogQL parser (similar)
-- NATS subscriber per browser tab (additional NATS capacity planning)
-- A separate dashboards-api service (new deployment, new database, new Helm chart, new on-call surface)
+The test job took 45 seconds longer in aggregate, accounted for by the two new test packages (`pkg/promql`, `pkg/logql`) and the new test file in the query-engine (`logs_sse_test.go`). The build job time was unchanged. The lint job time was unchanged. No new external services in CI. No new operational components at runtime: no new processes, no new containers, no new Helm sub-charts beyond a single ConfigMap for the dashboards migration, no new observability dashboards beyond the ones shipped in Phase E-0.
 
-I'd have shipped maybe two days faster. I'd have committed the team to maintaining all of those dependencies forever. I'd have made future security audits more expensive. I'd have made onboarding slower. I'd have made the brand experience worse by routing chart rendering through someone else's UI conventions.
+### The Counterfactual
 
-Two days, for that pile of debt. It's not even close.
+A hypothetical "import everything" version of the same feature set would have brought in: uPlot (38 KB embedded asset, license header, vendor file); the full Jaeger UI React application (several megabytes shipped to the browser, plus a build pipeline); the Prometheus PromQL parser (17 MB of binary growth, 47 lines of go.sum); the Loki LogQL parser (similar); a NATS subscriber per browser tab (additional NATS capacity planning); and a separate dashboards-api service (new deployment, new database, new Helm chart, new oncall surface).
+
+The counterfactual would have shipped approximately two days faster than the actual implementation. It would have committed the team to maintaining all of those dependencies for as long as the platform exists. Future security audits would have been longer. Future onboarding would have been slower. Future upgrades would have been blocked on coordinating with the dependencies' release cycles. The brand experience would have remained fragmented, with operators routing chart rendering through someone else's UI conventions.
+
+Two days saved, in exchange for that pile of permanent debt. The trade is not close.
+
+## Principles That Survived
+
+The five decisions described above were not derived from a unified theory. They were independent judgments made under similar constraints, with the cumulative pattern only visible in retrospect. The pattern, distilled into transferable principles, is the most useful artifact of the exercise.
+
+### Count What You Actually Need Before You Count What's Available
+
+The library under consideration has a feature list, and the feature list will impress. The actual requirement is a much smaller subset. Before importing, the subset should be enumerated explicitly. "I need line series with optional area fill and time-formatted axes" is specific. "I need a charting library" is not. If the subset is small — under a few hundred lines, under a few clear methods — building it is usually correct. If the subset is large enough that building it would be a project of its own, importing the library is usually correct. The decision becomes data-driven once the counting has been done; without the counting, the import happens by habit.
+
+### Polling Is Push You Didn't Have to Operate
+
+The latency cost of polling against the existing primary store is almost always lower than the operational cost of a new push tier. For read paths with a small number of subscribers and a forgiving latency budget, polling is the right answer. Push can be added later under the same wire shape if the workload demands it. Push, once deployed, cannot be removed without a migration. The asymmetry favors deferring the push design until concrete evidence justifies it.
+
+### Opaque Columns Beat Normalized Schemas for Documents the Server Doesn't Read
+
+When a schema is being designed for data the server never queries inside, the data is a document, not a relation. JSONB is the correct primitive. The shape should be validated at the boundary — is it an object, is it under a size limit — and the client should own the schema beneath. This eliminates the coupling between client release cadence and schema migrations, which is one of the largest sources of friction in normalized-schema designs.
+
+### The Parser Is the Contract
+
+For compatibility shims against existing query languages, the language should be scoped deliberately and the parser should be the source of truth on what is supported. Accepting the full AST and filtering later produces worse error messages and harder-to-reason-about edge cases. Rejecting at parse time, with a clear error pointing at the unsupported construct, gives the user better feedback and gives the implementation a smaller surface to reason about. The upstream parser is the right choice when full compatibility is required; the scoped parser is the right choice when the shim is a migration aid.
+
+### Tests Catch the Bugs You Would Ship
+
+The most valuable tests are not the ones that exercise the happy path; they are the ones that pick at the edges of the validation matrix with inputs no realistic client would send. The "layout is a string" bug is the canonical example. The bug would have been invisible in production traffic but would have remained a latent vulnerability. The test that caught it asserted a property no user would have noticed missing, but the absence of the property would have been a real defect. This is the shape of useful test coverage: every clearly-wrong input is rejected in a clearly-traceable way.
+
+## What the Numbers Hide: The Maintenance Story
+
+The numbers above describe what the implementation cost in the moment. They do not describe what it will cost over the next five years. The maintenance story is the part of the analysis most often omitted from "build vs. buy" discussions, and it is the part most likely to dominate the total cost of ownership.
+
+The custom implementations in Phase E are designed to be read and maintained by a future engineer who has not seen the code before. Each file carries a top-of-file documentation comment explaining its purpose, the design alternatives that were considered, and the reasoning that produced the chosen approach. Each non-obvious section carries inline comments. The dependency graph contains only the Go standard library, ClickHouse driver code, and a few extremely stable libraries (Gin, pgx, zap). None of these substrates have shown meaningful breaking-change behavior in recent years.
+
+The imported alternatives would have produced a different maintenance profile. uPlot's API has changed several times in its lifetime; each major version requires a code review of the integration. The Prometheus repository ships breaking changes to its parser as part of its normal release cadence, sometimes silently. Jaeger UI's React stack absorbs the entirety of the JavaScript ecosystem's churn — Webpack upgrades, React major versions, Redux deprecation cycles, RxJS major versions. The team's calendar of "must respond to upstream changes" events would have been substantially fuller.
+
+The Google Site Reliability Engineering workbook frames this trade as the "toil budget" of a system: the recurring operational cost of keeping the system running over its lifetime, independent of the value the system delivers. Imported dependencies generate toil. Custom implementations, when bounded in scope, generate less toil over their lifetimes. The cost is paid up front, in the implementation, rather than continuously, in the maintenance.
+
+## The Operational Profile of the Visualization Layer
+
+Phase E added zero new runtime components. The native visualization features are served by the existing `ui-server` and `query-engine` processes, which were already in the deployment. The PromQL and LogQL endpoints are new routes on the existing query-engine HTTP server. The dashboards endpoints are new routes on the existing tenant-api HTTP server. The SSE log-tail endpoint is a new route on the existing query-engine HTTP server. The dashboards table is a new migration in the existing tenant-api database.
+
+This is the operational profile a small team can sustain. The platform's runtime topology was not changed by Phase E. The number of services to monitor did not change. The number of Helm sub-charts did not change. The number of oncall rotations did not change. The number of database connections did not change. The deployment artifact list grew by one ConfigMap (for the dashboards migration) and zero containers.
+
+The contrast with a hypothetical microservices-oriented implementation is instructive. Splitting dashboards into a separate service would have added one Go binary, one Postgres database (or one schema in the existing database, requiring a separate connection pool), one Helm chart, one Service definition, one Deployment, one HorizontalPodAutoscaler, one ServiceMonitor, one PrometheusRule, and one set of dashboards documenting its health. Each of those is small individually. In aggregate, they constitute the operational complexity that has caused multiple commercial platforms to slow their development pace as they accumulated services.
+
+The lesson, as DHH has argued repeatedly, is that "the majestic monolith" is the correct default for small teams. Decompose only when concrete operational pressure demands it. The platform is, by deliberate choice, a small portfolio of Go binaries that share infrastructure, configuration, and operational discipline.
+
+## On the Long View of Boring Technology
+
+The arc of the Phase E exercise is, in retrospect, an argument for boring technology. The chart is built on Canvas 2D, which has been stable since 2008. The log tail uses Server-Sent Events, defined in 2009 and supported in every browser since 2011. The trace waterfall renders to imperative DOM elements, the same primitives any HTML page has used since the 1990s. The dashboards live in PostgreSQL with JSONB, available since PostgreSQL 9.4 in 2014. The PromQL and LogQL parsers are recursive-descent implementations of subsets of well-documented languages.
+
+Every one of these substrates has demonstrated multi-decade stability. The platform's Phase E code can be read and maintained by anyone who understands HTML, CSS, JavaScript, Go, and SQL. There are no framework conventions to learn, no build pipelines to debug, no version-coordination problems to solve. The on-ramp for a new engineer joining the team is short: read the files, understand what each function does, make changes.
+
+This is the property Dan McKinley's "Choose Boring Technology" essay names: boring technology is technology whose failure modes are exhaustively understood, whose patches arrive predictably, and whose behavior in five years is approximately what it is today. Innovation tokens — the finite budget of new ideas a project can absorb without losing maintainability — are best spent on the parts of the system that genuinely differentiate it, not on the parts that are commodity infrastructure. The visualization layer of an observability platform is commodity infrastructure. The intelligence of the platform lives in the ingest pipeline, the storage engine, and the query optimizer. Spending innovation tokens on the rendering surface is a category mistake.
+
+The native chart renderer is boring technology. The SSE log tail is boring technology. The trace waterfall built from imperative DOM is boring technology. The dashboards table with a JSONB column is boring technology. The hand-rolled PromQL parser is boring technology. The aggregate Phase E implementation spends zero innovation tokens. Every token it could have spent was spent instead on the platform's actual differentiators: the multi-feature ML runtime, the federated query executor, the cost-based optimizer, the hot-cold storage policy with per-tenant retention overrides. The visualization layer is the boring part of the system on purpose, so that the interesting parts can absorb the team's attention.
+
+## The Coda
+
+Ten days after the question that started this work, the engineering director opened the new Metrics tab. He typed a tenant ID, clicked the Plus Panel button, edited the query to chart his team's API error rate, clicked Plus Panel again, charted p99 latency, clicked Save, named the dashboard "checkout-api ops," and shared the URL in a Slack channel with three of his SREs. By the end of the day, eleven people on his team had bookmarked the URL. By the end of the week, the dashboard had been forked twice for adjacent services. Nobody asked about Grafana.
+
+This is the only validation the work needs. The library that was not imported is the library that does not have to be maintained. The microservice that was not split out is the microservice that does not have to be operated. The framework that was not adopted is the framework whose breaking changes do not need to be tracked. Every "no" the design says to extra surface area is a "yes" to the team's capacity to maintain the system five years from now. The instinct to add — the bigger library, the more sophisticated architecture, the trendier framework — is the instinct most engineers need to fight, because it is the instinct the commercial software industry has spent decades training into them.
+
+The five forks were not dramatic. None of them was a war story. Most of them required a few hours of writing and several hours of staring at the resulting diff, asking whether the choice was too clever or not clever enough. The decisions individually were small. The aggregate effect, after two weeks, is a system as featureful as one assembled by importing five things and significantly easier to live with for the next five years.
+
+That is the trade. It almost always favors the small library. The case for the larger one needs to clear a higher bar than most engineers, including the author of this document, instinctively make it clear.
+
+Most days, when the bar is examined, it has not been cleared.
 
 ---
 
-## Five principles, generalizable
+## Authority & Research
 
-The hard part of writing about decisions like this is that the meta-lesson — "write small focused libraries" — is too crude to be useful as a principle. The interesting question is *when to apply it and when not to*. Five things I'll carry forward:
+### Foundational Specifications & Standards
+*   **RFC 8259: The JavaScript Object Notation (JSON) Data Interchange Format**: [https://datatracker.ietf.org/doc/html/rfc8259](https://datatracker.ietf.org/doc/html/rfc8259)
+*   **WHATWG HTML Living Standard — Server-Sent Events**: [https://html.spec.whatwg.org/multipage/server-sent-events.html](https://html.spec.whatwg.org/multipage/server-sent-events.html)
+*   **W3C Trace Context Specification**: [https://www.w3.org/TR/trace-context/](https://www.w3.org/TR/trace-context/)
+*   **MDN — Canvas 2D API**: [https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D](https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D)
+*   **MDN — EventSource Interface**: [https://developer.mozilla.org/en-US/docs/Web/API/EventSource](https://developer.mozilla.org/en-US/docs/Web/API/EventSource)
+*   **MDN — Content Security Policy**: [https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP](https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP)
 
-### One: count what you actually need before you count what's available
+### Query Languages & Compatibility Targets
+*   **PromQL Documentation (Prometheus)**: [https://prometheus.io/docs/prometheus/latest/querying/basics/](https://prometheus.io/docs/prometheus/latest/querying/basics/)
+*   **Prometheus PromQL Parser Source**: [https://github.com/prometheus/prometheus/tree/main/promql/parser](https://github.com/prometheus/prometheus/tree/main/promql/parser)
+*   **LogQL Documentation (Grafana Loki)**: [https://grafana.com/docs/loki/latest/query/](https://grafana.com/docs/loki/latest/query/)
+*   **VictoriaMetrics MetricsQL**: [https://docs.victoriametrics.com/MetricsQL.html](https://docs.victoriametrics.com/MetricsQL.html)
+*   **Grafana ClickHouse Datasource Plugin**: [https://grafana.com/grafana/plugins/grafana-clickhouse-datasource/](https://grafana.com/grafana/plugins/grafana-clickhouse-datasource/)
 
-The library you almost imported has a feature list, and the feature list will impress you. The thing you actually need is a much smaller subset of that feature list. Before you import, write down the subset. Be specific. "I need line series with optional area fill" is specific. "I need a charting library" is not. If the subset is small enough — under a few hundred lines, under a few clear methods — write it. If the subset is large enough that writing it would be a project of its own, import the library. The decision is data-driven once you've done the counting; without the counting, you'll import out of habit.
+### Database & Storage Theory
+*   **ClickHouse MergeTree Engine Documentation**: [https://clickhouse.com/docs/en/engines/table-engines/mergetree-family/mergetree](https://clickhouse.com/docs/en/engines/table-engines/mergetree-family/mergetree)
+*   **ClickHouse String Functions Reference**: [https://clickhouse.com/docs/en/sql-reference/functions/string-search-functions](https://clickhouse.com/docs/en/sql-reference/functions/string-search-functions)
+*   **PostgreSQL JSONB Data Type Documentation**: [https://www.postgresql.org/docs/current/datatype-json.html](https://www.postgresql.org/docs/current/datatype-json.html)
+*   **PostgreSQL Row Security Policies**: [https://www.postgresql.org/docs/current/ddl-rowsecurity.html](https://www.postgresql.org/docs/current/ddl-rowsecurity.html)
+*   **PostgreSQL Trigger Procedures**: [https://www.postgresql.org/docs/current/plpgsql-trigger.html](https://www.postgresql.org/docs/current/plpgsql-trigger.html)
 
-### Two: polling is push you didn't have to operate
+### Distributed Systems & Software Engineering Theory
+*   **The Fallacies of Distributed Computing (L. Peter Deutsch, James Gosling)**: [https://en.wikipedia.org/wiki/Fallacies_of_distributed_computing](https://en.wikipedia.org/wiki/Fallacies_of_distributed_computing)
+*   **Hyrum's Law**: [https://www.hyrumslaw.com/](https://www.hyrumslaw.com/)
+*   **Choose Boring Technology (Dan McKinley)**: [https://boringtechnology.club/](https://boringtechnology.club/)
+*   **The Majestic Monolith (DHH / 37signals)**: [https://m.signalvnoise.com/the-majestic-monolith/](https://m.signalvnoise.com/the-majestic-monolith/)
+*   **MonolithFirst (Martin Fowler)**: [https://martinfowler.com/bliki/MonolithFirst.html](https://martinfowler.com/bliki/MonolithFirst.html)
+*   **Building Microservices, 2nd Edition (Sam Newman)**: [https://samnewman.io/books/building_microservices_2nd_edition/](https://samnewman.io/books/building_microservices_2nd_edition/)
 
-The latency cost of polling against your existing primary store is almost always lower than the operational cost of a new push tier. For read paths with a small number of subscribers and a forgiving latency budget — anything human-driven — poll. You can always add push later under the same wire shape if the workload genuinely demands it. You can't take a push system out of production without a migration.
+### Frontend & Visualization
+*   **uPlot — Fast, Lightweight Charting Library (Leon Sorokin)**: [https://github.com/leeoniya/uPlot](https://github.com/leeoniya/uPlot)
+*   **Apache Arrow JavaScript Bindings**: [https://arrow.apache.org/docs/js/](https://arrow.apache.org/docs/js/)
+*   **HTMX Essays (Carson Gross)**: [https://htmx.org/essays/](https://htmx.org/essays/)
+*   **The Locality of Behaviour Principle (Carson Gross)**: [https://htmx.org/essays/locality-of-behaviour/](https://htmx.org/essays/locality-of-behaviour/)
+*   **Jaeger UI Repository (Trace Visualization Reference)**: [https://github.com/jaegertracing/jaeger-ui](https://github.com/jaegertracing/jaeger-ui)
 
-### Three: opaque columns beat normalized schemas for documents the server doesn't read
+### Observability Standards
+*   **OpenTelemetry Trace API Specification**: [https://opentelemetry.io/docs/specs/otel/trace/api/](https://opentelemetry.io/docs/specs/otel/trace/api/)
+*   **The USE Method (Brendan Gregg)**: [https://www.brendangregg.com/usemethod.html](https://www.brendangregg.com/usemethod.html)
+*   **The RED Method (Tom Wilkie)**: [https://thenewstack.io/monitoring-microservices-red-method/](https://thenewstack.io/monitoring-microservices-red-method/)
 
-If you find yourself designing a schema where the server never queries inside the structure, the structure is a document, not a relation. Store it as JSONB. Validate the shape at the boundary (is it an object? is it under a size limit?), let the client own the schema beneath, and you'll never block a UI change on a server release. The cost is that you give up the ability to query inside the document, which is fine because you weren't going to.
+### Operational Rigor & Security
+*   **Site Reliability Engineering Workbook (Google)**: [https://sre.google/workbook/table-of-contents/](https://sre.google/workbook/table-of-contents/)
+*   **OWASP SQL Injection Prevention Cheat Sheet**: [https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html)
+*   **OWASP Input Validation Cheat Sheet**: [https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html](https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html)
+*   **Dan Luu — Files Are Hard**: [https://danluu.com/file-consistency/](https://danluu.com/file-consistency/)
 
-### Four: the parser is the contract
-
-If you're building a compatibility shim against an existing query language, scope the language deliberately and let the parser be the source of truth on what you support. Don't accept the AST and filter later — accept only what you can translate, reject everything else with a clear error message at parse time. This dodges a whole class of subtle bugs where the user gets accepted-but-incorrectly-translated results, and it gives the user a better error message essentially for free. If you can't scope down — if your job is to be fully PromQL-compatible — use the upstream parser and own the translation layer instead.
-
-### Five: tests catch the bugs you would ship, not the bugs you wouldn't
-
-The "layout is a string" bug is the canonical example. The test that caught it had a payload that no real client would ever send. But the validator had a hole that a malicious or buggy client *could* exploit, and the test was the only thing that surfaced the hole before production. The most valuable tests are the ones that pick at the edges of your validation matrices. The shape of useful test coverage is not "the happy path works" — it's "every clearly-wrong input is rejected in a clearly-traceable way." Write the test that fails in the way that catches the bug you would otherwise ship.
-
----
-
-A coda. The user — the engineering director, the human one — opened the new Metrics tab on a Tuesday, ten days after he'd asked the question. He typed a tenant ID, clicked Plus Panel, edited the query to chart his team's API error rate, clicked Plus Panel again, charted p99 latency, clicked Save, named it "checkout-api ops," and shared the URL in Slack with three of his SREs. By the end of the day eleven people on his team had bookmarked it. By the end of the week the dashboard had been forked twice for adjacent services. Nobody asked about Grafana.
-
-That's the only validation that matters. The library you didn't import is the library you don't have to maintain. The microservice you didn't split out is the microservice you don't have to operate. The framework you didn't adopt is the framework whose breaking changes you don't have to follow. Every "no" you say to extra surface area is a "yes" to the team's ability to actually maintain the system five years from now. The instinct to add — to reach for the bigger library, the more sophisticated architecture, the trendier framework — is the instinct most engineers need to fight, because it's the instinct that the entire commercial software industry has spent decades training into us.
-
-The five forks weren't dramatic. None of them was a war story. Most of them took a few hours of writing plus a few hours of staring at the diff wondering if I was being too clever or not clever enough. The decisions themselves were small. The aggregate effect, after two weeks, is a system that's about as featureful as one I'd have built by importing five things, and significantly easier to live with for the next five years.
-
-That's the trade. It almost always favors the small library. The case for the big one needs to clear a higher bar than most engineers, including me, instinctively make it clear.
-
-Most days, when I check, it doesn't.
+### Internal Architecture Records
+*   **ADR-0028: Visualization Strategy (Hybrid Grafana + Native)**: `docs/adr/0028-visualization-strategy.md`
+*   **ADR-0029: Native Metrics Workbench (Canvas Chart Primitive)**: `docs/adr/0029-native-metrics-workbench.md`
+*   **ADR-0030: Native Logs Explorer (SSE Live Tail)**: `docs/adr/0030-native-logs-explorer.md`
+*   **ADR-0031: Native Trace Waterfall + Service Map**: `docs/adr/0031-native-trace-waterfall.md`
+*   **ADR-0032: Dashboards CRUD (JSONB Persistence)**: `docs/adr/0032-dashboards-crud.md`
+*   **ADR-0033: PromQL + LogQL Compatibility Shims**: `docs/adr/0033-promql-logql-compat-shims.md`
