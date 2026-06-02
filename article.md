@@ -1,4 +1,4 @@
-# Engineering for Visibility: A Deep Dive into Distributed Observability Architecture
+# The Architecture of Distributed Observability
 
 Observability platforms often fail in inverse proportion to the seriousness of their stated mission. There is no spectacular crash, no smoking gun in a stack trace, no on-call page at three in the morning. There is, instead, a slow erosion of confidence. A latency dashboard becomes "directional rather than accurate." A traces tab acquires a reputation for being slow enough that engineers stop opening it. A logs query that used to return in two seconds quietly begins returning in twelve, and then in forty, and then is silently capped at a thousand rows that the operator did not request and does not realise. The system that was built to be the source of truth becomes the place engineers go to confirm what they already suspect.
 
@@ -677,62 +677,10 @@ The architecture is the discipline. The discipline is the architecture. The syst
 
 ---
 
-## Authority & Research
-
-### Foundational Protocols & Standards
+## References
 
 *   **OpenTelemetry Specification** — [https://opentelemetry.io/docs/specs/otel/](https://opentelemetry.io/docs/specs/otel/)
-*   **OpenTelemetry Protocol (OTLP) Specification** — [https://opentelemetry.io/docs/specs/otlp/](https://opentelemetry.io/docs/specs/otlp/)
-*   **W3C Trace Context Recommendation** — [https://www.w3.org/TR/trace-context/](https://www.w3.org/TR/trace-context/)
-*   **HTML5 Server-Sent Events** — [https://html.spec.whatwg.org/multipage/server-sent-events.html](https://html.spec.whatwg.org/multipage/server-sent-events.html)
-*   **Prometheus Exposition Format** — [https://prometheus.io/docs/instrumenting/exposition_formats/](https://prometheus.io/docs/instrumenting/exposition_formats/)
-
-### Distributed Systems Theory & Reliability
-
-*   **Mohan, Haderle, Lindsay, Pirahesh, Schwarz — *ARIES: A Transaction Recovery Method Supporting Fine-Granularity Locking and Partial Rollbacks Using Write-Ahead Logging*** (ACM TODS, 1992) — [https://dl.acm.org/doi/10.1145/128765.128770](https://dl.acm.org/doi/10.1145/128765.128770)
-*   **Little, J. D. C. — *A Proof for the Queuing Formula L = λW*** (Operations Research, 1961) — [https://www.jstor.org/stable/167570](https://www.jstor.org/stable/167570)
-*   **Roberts, S. W. — *Control Chart Tests Based on Geometric Moving Averages*** (Technometrics, 1959) — [https://www.tandfonline.com/doi/abs/10.1080/00401706.1959.10489860](https://www.tandfonline.com/doi/abs/10.1080/00401706.1959.10489860)
-*   **Bairavasundaram, Goodson, Pasupathy, Schindler — *An Analysis of Latent Sector Errors in Disk Drives*** (USENIX FAST 2008) — [https://www.usenix.org/legacy/event/fast08/tech/bairavasundaram.html](https://www.usenix.org/legacy/event/fast08/tech/bairavasundaram.html)
-*   **Selinger, Astrahan, Chamberlin, Lorie, Price — *Access Path Selection in a Relational Database Management System*** (SIGMOD 1979) — [https://dl.acm.org/doi/10.1145/582095.582099](https://dl.acm.org/doi/10.1145/582095.582099)
-*   **Hewitt, Bishop, Steiger — *A Universal Modular Actor Formalism for Artificial Intelligence*** (IJCAI 1973) — [https://www.ijcai.org/Proceedings/73/Papers/027B.pdf](https://www.ijcai.org/Proceedings/73/Papers/027B.pdf)
-
-### Observability Practice & Books
-
 *   **Sridharan, C. — *Distributed Systems Observability*** (O'Reilly, 2018) — [https://www.oreilly.com/library/view/distributed-systems-observability/9781492033431/](https://www.oreilly.com/library/view/distributed-systems-observability/9781492033431/)
 *   **Majors, Fong-Jones, Miranda — *Observability Engineering*** (O'Reilly, 2022) — [https://www.oreilly.com/library/view/observability-engineering/9781492076438/](https://www.oreilly.com/library/view/observability-engineering/9781492076438/)
-*   **Brazil, B. — *Prometheus: Up & Running*** (O'Reilly, 2018) — [https://www.oreilly.com/library/view/prometheus-up/9781492034131/](https://www.oreilly.com/library/view/prometheus-up/9781492034131/)
-*   **Sigelman, Barroso, Burrows et al. — *Dapper, a Large-Scale Distributed Systems Tracing Infrastructure*** (Google Research, 2010) — [https://research.google/pubs/pub36356/](https://research.google/pubs/pub36356/)
-*   **Yang, Tschetter, Léauté, Slack — *Druid: A Real-time Analytical Data Store*** (SIGMOD 2014) — [https://dl.acm.org/doi/10.1145/2588555.2595631](https://dl.acm.org/doi/10.1145/2588555.2595631)
-
-### Operational Rigor & Engineering Culture
-
 *   **Beyer, Jones, Petoff, Murphy — *Site Reliability Engineering*** (Google / O'Reilly, 2016) — [https://sre.google/sre-book/table-of-contents/](https://sre.google/sre-book/table-of-contents/)
-*   **Beyer, Murphy, Rensin et al. — *The Site Reliability Workbook*** (Google / O'Reilly, 2018) — [https://sre.google/workbook/table-of-contents/](https://sre.google/workbook/table-of-contents/)
-*   **Allspaw, J. — *Blameless PostMortems and a Just Culture*** (Etsy Code as Craft, 2012) — [https://www.etsy.com/codeascraft/blameless-postmortems](https://www.etsy.com/codeascraft/blameless-postmortems)
 *   **McKinley, D. — *Choose Boring Technology*** (2015) — [https://boringtechnology.club/](https://boringtechnology.club/)
-*   **Nygard, M. — *Release It! Design and Deploy Production-Ready Software* (2nd ed.)** (Pragmatic Bookshelf, 2018) — [https://pragprog.com/titles/mnee2/release-it-second-edition/](https://pragprog.com/titles/mnee2/release-it-second-edition/)
-*   **Armstrong, J. — *Programming Erlang* (2nd ed.)** (Pragmatic Bookshelf, 2013) — [https://pragprog.com/titles/jaerlang2/programming-erlang/](https://pragprog.com/titles/jaerlang2/programming-erlang/)
-
-### Performance, Profiling & Storage
-
-*   **Gregg, B. — *Flame Graphs*** (2011) — [https://www.brendangregg.com/flamegraphs.html](https://www.brendangregg.com/flamegraphs.html)
-*   **Gregg, B. — *The USE Method*** — [https://www.brendangregg.com/usemethod.html](https://www.brendangregg.com/usemethod.html)
-*   **ClickHouse Documentation — MergeTree Engine Family** — [https://clickhouse.com/docs/en/engines/table-engines/mergetree-family/mergetree](https://clickhouse.com/docs/en/engines/table-engines/mergetree-family/mergetree)
-*   **ClickHouse Documentation — Multi-Disk Storage Configuration** — [https://clickhouse.com/docs/en/engines/table-engines/mergetree-family/mergetree#table_engine-mergetree-multiple-volumes](https://clickhouse.com/docs/en/engines/table-engines/mergetree-family/mergetree#table_engine-mergetree-multiple-volumes)
-
-### Security & Defence-in-Depth
-
-*   **OWASP SQL Injection Prevention Cheat Sheet** — [https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html](https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html)
-*   **OWASP Password Storage Cheat Sheet** — [https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)
-*   **OWASP Input Validation Cheat Sheet** — [https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html](https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html)
-*   **PostgreSQL Documentation — Row Security Policies** — [https://www.postgresql.org/docs/current/ddl-rowsecurity.html](https://www.postgresql.org/docs/current/ddl-rowsecurity.html)
-*   **Gilman, Barth — *Zero Trust Networks: Building Secure Systems in Untrusted Networks*** (O'Reilly, 2017) — [https://www.oreilly.com/library/view/zero-trust-networks/9781491962183/](https://www.oreilly.com/library/view/zero-trust-networks/9781491962183/)
-
-### Software Engineering & Programming Discipline
-
-*   **Kernighan, B. & Pike, R. — *The Practice of Programming*** (Addison-Wesley, 1999) — [https://www.cs.princeton.edu/~bwk/tpop.webpage/](https://www.cs.princeton.edu/~bwk/tpop.webpage/)
-*   **Sadalage, P. & Ambler, S. — *Refactoring Databases: Evolutionary Database Design*** (Addison-Wesley, 2006) — [https://databaserefactoring.com/](https://databaserefactoring.com/)
-*   **Fowler, M. — *Evolutionary Database Design*** — [https://martinfowler.com/articles/evodb.html](https://martinfowler.com/articles/evodb.html)
-*   **Ajmani, S. — *Go Concurrency Patterns: Context*** (The Go Blog, 2014) — [https://go.dev/blog/context](https://go.dev/blog/context)
-*   **McIlroy, M. D. — *Summary — what's most important.*** (Bell Labs internal memo, 1964) — collected in [https://www.bell-labs.com/usr/dmr/www/mdmpipe.html](https://www.bell-labs.com/usr/dmr/www/mdmpipe.html)
-*   **Rudin, C. — *Stop Explaining Black Box Machine Learning Models for High Stakes Decisions and Use Interpretable Models Instead*** (Nature Machine Intelligence, 2019) — [https://www.nature.com/articles/s42256-019-0048-x](https://www.nature.com/articles/s42256-019-0048-x)
