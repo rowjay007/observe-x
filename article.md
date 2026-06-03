@@ -99,9 +99,6 @@ A write-ahead log is the oldest durability primitive in databases: every state c
 The naïve implementation calls `fsync(2)` on every write. This is correct but slow: a typical NVMe SSD can sustain roughly five to ten thousand fsync operations per second, and an ingest path that needs to accept tens of thousands of signals per second cannot afford one fsync per signal. The technique used to bridge the gap is *group commit*: writes are batched in page cache and flushed by a background goroutine on a fixed cadence.
 
 ```go
-// defaultSyncInterval is the bounded durability window. Anything
-// written within this window before a crash MAY be lost; anything
-// before is guaranteed to be on disk (modulo disk-side caches).
 const defaultSyncInterval = 5 * time.Millisecond
 ```
 
@@ -134,9 +131,6 @@ Authentication begins at the receiver. Every incoming signal must carry an API k
 
 ```go
 type KeyStore interface {
-    // ValidateKey returns the tenantID associated with key if and only
-    // if the key is currently valid (not revoked, not expired).
-    // Callers MUST NOT log the raw key.
     ValidateKey(key string) (tenantID string, valid bool)
 }
 ```
@@ -195,10 +189,6 @@ score = base
 The z-score is computed against an exponentially weighted moving baseline maintained per service:
 
 ```go
-// zscore returns the standardised deviation of x from the rolling
-// mean. Returns 0 if the tracker has too few observations to be
-// meaningful (n < 30) — we don't want one outlier in a cold tracker
-// to dominate the sampling priority.
 func (t *ewmaTracker) zscore(key string, x float64) float64 {
     t.mu.RLock()
     defer t.mu.RUnlock()
@@ -236,10 +226,10 @@ The platform's supervisor implements the OTP *one-for-one* strategy: when an act
 ```go
 type Options struct {
     MailboxSize    int
-    MaxRestarts    int           // Default: 5 restarts per minute
+    MaxRestarts    int
     RestartWindow  time.Duration
-    BackoffMin     time.Duration // Default: 250ms
-    BackoffMax     time.Duration // Default: 30s
+    BackoffMin     time.Duration
+    BackoffMax     time.Duration
     HealthInterval time.Duration
 }
 ```
@@ -257,12 +247,11 @@ The quarantined state is exposed through a Prometheus gauge (`observex_actor_qua
 Bounded mailboxes provide back-pressure, but back-pressure is a blunt instrument. A tenant that briefly exceeds its mailbox capacity during a downstream stall (a ClickHouse merge storm, a network blip during a redeploy) should not lose data permanently — it should be buffered until the downstream catches up. The platform's answer is the *spillover side-car*: a NATS JetStream stream that absorbs overflow signals and re-injects them as the mailbox drains.
 
 ```go
-// Options configures the JetStream connection + retention.
 type Options struct {
-    URL        string        // NATS URL
-    StreamName string        // default "OBSERVEX_SPILLOVER"
-    MaxAge     time.Duration // retention; default 1h
-    MaxBytes   int64         // per-stream bound; default 1 GiB
+    URL        string
+    StreamName string
+    MaxAge     time.Duration
+    MaxBytes   int64
 }
 ```
 
@@ -331,7 +320,6 @@ var allowedColumnsPerSource = map[string]map[string]bool{
         "trace_id":     true,
         "span_id":      true,
     },
-    // ... traces
 }
 ```
 
@@ -383,7 +371,6 @@ func matcherSQL(m matcher) (string, any, error) {
         }
         return "match(" + col + ", ?)", m.val, nil
     }
-    // ...
 }
 ```
 
@@ -412,8 +399,6 @@ class ObservexChart {
   constructor(canvas, opts = {}) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
-    // ... HiDPI handshake, axis formatting, tooltip rendering,
-    // click-drag time-range select, EWMA-friendly Y-axis scaling.
   }
 }
 ```
@@ -435,7 +420,6 @@ The alternative is *Server-Sent Events* with a one-second poll of ClickHouse, ad
 ```go
 sql := "SELECT timestamp, severity, service_name, body, trace_id, span_id, attributes " +
     "FROM logs WHERE tenant_id = ? AND timestamp > ?"
-// ...
 for {
     select {
     case <-ctx.Done():
@@ -443,7 +427,6 @@ for {
     case <-pollTicker.C:
         args[1] = lastSeen
         rows, err := client.Query(ctx, sql, args...)
-        // emit each row as an SSE "log" event, advance lastSeen
     }
 }
 ```
@@ -511,9 +494,9 @@ Go's concurrency primitives are simultaneously the language's greatest strength 
 Every channel in the platform's hot path is *bounded*. The pattern is so universal that the codebase treats an unbounded channel as a code smell warranting review:
 
 ```go
-ingestCh := make(chan signal.Signal, 65536)     // ingest back-pressure
-out := make(chan signal.Signal, 1024)            // pipeline stages
-mailbox := make(chan signal.Signal, 4096)        // per-tenant actor
+ingestCh := make(chan signal.Signal, 65536)
+out := make(chan signal.Signal, 1024)
+mailbox := make(chan signal.Signal, 4096)
 ```
 
 The bound is the budget. The budget is profiled. The budget is enforced. The mathematics is the same throughout: a bounded queue with a known service rate has a bounded latency tail; an unbounded queue has an unbounded latency tail and an unbounded memory footprint. Little's Law (the relationship `L = λW` between queue length, arrival rate, and waiting time, documented in John Little's 1961 paper) is the underlying discipline; every bounded channel in the codebase is a Little's Law statement made executable.
